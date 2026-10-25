@@ -1,0 +1,87 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         String    @default("CANDIDATE")
+  createdAt    DateTime  @default(now())
+  resumes      Resume[]
+  attempts     Attempt[]
+}
+
+model Resume {
+  id        String   @id @default(cuid())
+  userId    String
+  fileName  String
+  text      String   @db.Text
+  skills    Json
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Question {
+  id          String   @id @default(cuid())
+  prompt      String   @db.Text
+  category    String
+  difficulty  String
+  type        String
+  options     Json
+  answerIndex Int
+  explanation String   @db.Text
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model Attempt {
+  id        String            @id @default(cuid())
+  userId    String
+  category  String
+  role      String
+  difficulty String
+  status    String            @default("IN_PROGRESS")
+  score     Int?
+  deadline  DateTime
+  createdAt DateTime          @default(now())
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questions AttemptQuestion[]
+  responses Response[]
+
+  @@index([userId, status, createdAt])
+}
+
+model AttemptQuestion {
+  id          String     @id @default(cuid())
+  attemptId   String
+  position    Int
+  prompt      String     @db.Text
+  type        String
+  options     Json
+  answerIndex Int
+  explanation String     @db.Text
+  attempt     Attempt    @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  responses   Response[]
+
+  @@unique([attemptId, position])
+}
+
+model Response {
+  id         String          @id @default(cuid())
+  attemptId  String
+  questionId String
+  answer     String
+  correct    Boolean         @default(false)
+  createdAt  DateTime        @default(now())
+  attempt    Attempt         @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  question   AttemptQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([attemptId, questionId])
+}

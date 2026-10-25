@@ -1,0 +1,3 @@
+import { describe,it,expect } from 'vitest';
+import {scoreMcq,validateEvaluation} from '../src/score.js';
+describe('server-side MCQ scoring',()=>{it('scores answers against answer keys',()=>{expect(scoreMcq([{questionId:'a',selectedIndex:2},{questionId:'b',selectedIndex:0}],[{id:'a',correctIndex:2},{id:'b',correctIndex:3}])).toMatchObject({correct:1,total:2,score:50})});it('returns zero for unanswered set',()=>{expect(scoreMcq([],[{id:'a',correctIndex:2}]).score).toBe(0)});it('rejects out-of-range rubric values',()=>{expect(()=>validateEvaluation({technicalAccuracy:41,completeness:0,problemSolving:0,clarity:0,evidence:[],missingConcepts:[],feedback:''})).toThrow()})});
