@@ -170,6 +170,42 @@ describe('authentication and candidate API routes', () => {
     expect(mocks.userCreate).not.toHaveBeenCalled();
   });
 
+  it('returns a safe error and logs database error metadata without sensitive values', async () => {
+    const databaseError = Object.assign(new Error('connection failed for user@example.com with password=never-log-this'), { code: 'P1001' });
+    mocks.userFindUnique.mockRejectedValue(databaseError);
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Taylor Candidate', email: 'taylor@example.com', password: 'a-long-test-password' }),
+      });
+      expect(response.status).toBe(500);
+      expect(await response.json()).toEqual({ error: 'Something went wrong. Please try again.' });
+      expect(log).toHaveBeenCalledWith('[api] route=/api/auth/signup error=Error code=P1001');
+      expect(log.mock.calls.flat().join(' ')).not.toContain('never-log-this');
+      expect(log.mock.calls.flat().join(' ')).not.toContain('taylor@example.com');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('treats a concurrent unique-email conflict as a duplicate signup', async () => {
+    mocks.userCreate.mockRejectedValue(Object.assign(new Error('unique constraint'), { code: 'P2002' }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Taylor Candidate', email: 'taylor@example.com', password: 'a-long-test-password' }),
+      });
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'Email is already registered.' });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('scopes dashboard history queries to the authenticated candidate', async () => {
     mocks.attemptFindMany.mockResolvedValue([{ id: 'attempt-1', score: 75, category: 'React' }]);
     mocks.attemptCount.mockResolvedValue(17);
