@@ -82,6 +82,21 @@ beforeEach(() => {
 const bearer = (userId: string) => ({ Authorization: `Bearer ${jwt.sign({ sub: userId }, secret)}` });
 
 describe('authentication and candidate API routes', () => {
+  it('allows the production frontend origin and CORS preflight requests', async () => {
+    const response = await fetch(`${baseUrl}/api/dashboard`, {
+      method: 'OPTIONS',
+      headers: {
+        Origin: 'https://regal-dusk-361215.netlify.app',
+        'Access-Control-Request-Method': 'GET',
+        'Access-Control-Request-Headers': 'authorization',
+      },
+    });
+    expect(response.status).toBe(204);
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://regal-dusk-361215.netlify.app');
+    expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization');
+    expect(response.headers.get('access-control-allow-methods')).toContain('GET');
+  });
+
   it('rejects unauthenticated access to the dashboard', async () => {
     const response = await fetch(`${baseUrl}/api/dashboard`);
     expect(response.status).toBe(401);
