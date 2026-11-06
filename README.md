@@ -37,6 +37,14 @@ The development script uses `prisma migrate dev`, which is intended for developm
 
 Set `GEMINI_API_KEY` in `backend/.env`; the code reads this exact server-side variable. `GEMINI_MODEL` is optional and defaults to `gemini-3.8-flash`. Never prefix the key with `VITE_` or put it in a frontend file. Without the key, AI routes return a clear service-not-configured response; provider calls have not been verified in this environment.
 
+## Mock interview usage
+
+Each mock interview generates exactly 8 questions in one Gemini request and evaluates all 8 submitted answers in one combined request. A successful interview therefore uses 2 primary-model requests; transient retries or fallback requests can add calls. The backend limits each authenticated user to 10 successfully generated interviews per UTC day and records daily interview totals, Gemini request counts, model names, statuses, and token usage. Idempotency keys prevent repeated starts and completed evaluations are returned from storage.
+
+Configure `GEMINI_RETRY_ATTEMPTS` (default 3) and `GEMINI_RETRY_BASE_DELAY_MS` (default 500) in the backend environment. `GEMINI_FALLBACK_MODEL` defaults to `gemini-3.7-flash`; set it blank to disable fallback. The Gemini free-tier quota is shared by the Google API project, so per-user limits do not guarantee the project will stay within its free quota. Check the active project limits in Google AI Studio. Transient 429 rate limits are retried; project quota exhaustion returns a friendly 429 without repeated calls.
+
+Apply the checked-in interview usage migration to the target PostgreSQL database before deploying this backend version. App startup does not run migrations automatically.
+
 Generate a long random `JWT_SECRET` (at least 32 characters) for local auth. `PORT`, `FRONTEND_URL`, and `MAX_UPLOAD_MB` are also defined in the backend env template.
 
 
@@ -52,9 +60,9 @@ Authenticated endpoints use `Authorization: Bearer <token>`.
 - Signup/login read and write `User` records; passwords are bcrypt-hashed and are not returned.
 - Dashboard/history query the signed-in user's `Attempt` and `Resume` records.
 - PDF uploads are signature-checked, parsed for text, and stored as extracted text and skill metadata in `Resume`, scoped to the authenticated user.
-- Question generation sends candidate-safe questions to the client and stores answer keys in `AttemptQuestion`.
-- Submission checks attempt ownership and deadline, compares selections to saved answer keys, and transactionally stores `Response` rows and the final `Attempt.score`.
-- `POST /api/evaluate` evaluates a descriptive answer using the Gemini rubric and schema validation.
+- Mock interview generation reserves a daily slot, creates exactly 8 candidate-safe questions in one Gemini call, and stores answer keys in `AttemptQuestion`.
+- Submission checks attempt ownership and deadline, requires all 8 answers, stores `Response` rows, and evaluates the full interview once with a validated Gemini response. Duplicate submissions return the cached result.
+- Gemini request statuses, model names, and token usage are recorded in `GeminiApiUsage` and aggregated in `DailyUsage`.
 
 Endpoints:
 
@@ -64,9 +72,8 @@ Endpoints:
 - `GET /api/dashboard`
 - `GET /api/questions`
 - `POST /api/resumes` — multipart PDF field `resume`
-- `POST /api/assessments/generate` — `{role,category,difficulty,count,durationMinutes,resumeId?,jobDescription?}`
+- `POST /api/assessments/generate` - `{role,category,difficulty,count:8,durationMinutes,resumeId?,jobDescription?}`; requires an `Idempotency-Key` header.
 - `POST /api/assessments/:id/submit` — `{answers:[{questionId,selectedIndex}]}`
-- `POST /api/evaluate` — `{prompt,answer}`
 
 ## Checks
 

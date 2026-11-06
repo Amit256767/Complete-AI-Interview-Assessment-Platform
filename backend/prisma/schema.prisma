@@ -16,6 +16,8 @@ model User {
   createdAt    DateTime  @default(now())
   resumes      Resume[]
   attempts     Attempt[]
+  dailyUsage   DailyUsage[]
+  geminiUsage  GeminiApiUsage[]
 }
 
 model Resume {
@@ -49,12 +51,19 @@ model Attempt {
   difficulty String
   status    String            @default("IN_PROGRESS")
   score     Int?
+  evaluation Json?
   deadline  DateTime
   createdAt DateTime          @default(now())
+  idempotencyKey String?
+  dailyUsageId String?
   user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  dailyUsage DailyUsage?      @relation(fields: [dailyUsageId], references: [id], onDelete: SetNull)
   questions AttemptQuestion[]
   responses Response[]
+  geminiUsage GeminiApiUsage[]
 
+  @@unique([userId, idempotencyKey])
+  @@index([dailyUsageId])
   @@index([userId, status, createdAt])
 }
 
@@ -84,4 +93,45 @@ model Response {
   question   AttemptQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
 
   @@unique([attemptId, questionId])
+}
+
+model DailyUsage {
+  id                 String   @id @default(cuid())
+  userId             String
+  dayStart           DateTime @db.Date
+  mockInterviewCount Int      @default(0)
+  geminiRequestCount Int      @default(0)
+  geminiInputTokens  Int      @default(0)
+  geminiOutputTokens Int      @default(0)
+  geminiTotalTokens  Int      @default(0)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attempts           Attempt[]
+  geminiUsage        GeminiApiUsage[]
+
+  @@unique([userId, dayStart])
+  @@index([userId, dayStart])
+}
+
+model GeminiApiUsage {
+  id             String   @id @default(cuid())
+  userId         String
+  attemptId      String
+  dailyUsageId   String
+  operation      String
+  model          String
+  statusCode     Int?
+  succeeded      Boolean
+  inputTokens    Int      @default(0)
+  outputTokens   Int      @default(0)
+  totalTokens    Int      @default(0)
+  createdAt      DateTime @default(now())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  attempt        Attempt  @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+  dailyUsage     DailyUsage @relation(fields: [dailyUsageId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([attemptId, operation])
+  @@index([dailyUsageId, createdAt])
 }

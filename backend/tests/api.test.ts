@@ -12,12 +12,17 @@ const mocks = vi.hoisted(() => ({
   attemptFindFirst: vi.fn(),
   attemptCreate: vi.fn(),
   attemptUpdate: vi.fn(),
+  attemptUpdateMany: vi.fn(),
   resumeFindMany: vi.fn(),
   resumeFindFirst: vi.fn(),
   resumeCreate: vi.fn(),
   responseUpsert: vi.fn(),
+  dailyUsageUpsert: vi.fn(),
+  dailyUsageUpdate: vi.fn(),
+  dailyUsageUpdateMany: vi.fn(),
+  geminiApiUsageCreate: vi.fn(),
   generateQuestions: vi.fn(),
-  evaluateAnswer: vi.fn(),
+  evaluateInterviewAnswers: vi.fn(),
 }));
 
 vi.mock('@prisma/client', () => ({
@@ -29,6 +34,7 @@ vi.mock('@prisma/client', () => ({
       findFirst: mocks.attemptFindFirst,
       create: mocks.attemptCreate,
       update: mocks.attemptUpdate,
+      updateMany: mocks.attemptUpdateMany,
     };
     resume = {
       findMany: mocks.resumeFindMany,
@@ -39,14 +45,16 @@ vi.mock('@prisma/client', () => ({
     $transaction = (callback: (tx: unknown) => unknown) =>
       callback({
         response: { upsert: mocks.responseUpsert },
-        attempt: { update: mocks.attemptUpdate },
+        attempt: { update: mocks.attemptUpdate, updateMany: mocks.attemptUpdateMany, create: mocks.attemptCreate, findFirst: mocks.attemptFindFirst },
+        dailyUsage: { upsert: mocks.dailyUsageUpsert, update: mocks.dailyUsageUpdate, updateMany: mocks.dailyUsageUpdateMany },
+        geminiApiUsage: { create: mocks.geminiApiUsageCreate },
       });
   },
 }));
 
 vi.mock('../src/ai.js', () => ({
   generateQuestions: mocks.generateQuestions,
-  evaluateAnswer: mocks.evaluateAnswer,
+  evaluateInterviewAnswers: mocks.evaluateInterviewAnswers,
 }));
 
 const secret = 'test-only-secret-that-is-long-enough-32';
@@ -75,11 +83,38 @@ beforeEach(() => {
   mocks.attemptFindMany.mockResolvedValue([]);
   mocks.attemptCount.mockResolvedValue(0);
   mocks.attemptFindFirst.mockResolvedValue(null);
+  mocks.attemptCreate.mockResolvedValue({ id: 'attempt-new', status: 'GENERATING' });
+  mocks.attemptUpdate.mockResolvedValue({ id: 'attempt-new' });
+  mocks.attemptUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.dailyUsageUpsert.mockResolvedValue({ id: 'daily-usage-1' });
+  mocks.dailyUsageUpdate.mockResolvedValue({ id: 'daily-usage-1' });
+  mocks.dailyUsageUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.geminiApiUsageCreate.mockResolvedValue({ id: 'gemini-usage-1' });
   mocks.resumeFindMany.mockResolvedValue([]);
   mocks.generateQuestions.mockResolvedValue([]);
 });
 
 const bearer = (userId: string) => ({ Authorization: `Bearer ${jwt.sign({ sub: userId }, secret)}` });
+const mockQuestions = Array.from({ length: 8 }, (_, index) => ({
+  prompt: `Interview question ${index + 1}: explain a useful engineering decision.`,
+  type: 'SCENARIO',
+  options: ['Choice A', 'Choice B', 'Choice C', 'Choice D'],
+  answerIndex: 0,
+  explanation: 'A clear answer explains the tradeoffs.',
+}));
+const mockEvaluation = {
+  overallScore: 82,
+  feedback: 'Your answers were clear and technically sound.',
+  strengths: ['Clear reasoning'],
+  weaknesses: ['Add more tradeoff detail'],
+  questionScores: Array.from({ length: 8 }, (_, index) => ({
+    position: index + 1,
+    score: 82,
+    feedback: `Feedback for answer ${index + 1}.`,
+    strengths: ['Good reasoning'],
+    weaknesses: ['Explain tradeoffs'],
+  })),
+};
 
 describe('authentication and candidate API routes', () => {
   it('allows the production frontend origin and CORS preflight requests', async () => {
@@ -212,12 +247,13 @@ describe('authentication and candidate API routes', () => {
     try {
       const response = await fetch(`${baseUrl}/api/assessments/generate`, {
         method: 'POST',
-        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 1, durationMinutes: 10 }),
+        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-001' },
+        body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 8, durationMinutes: 10 }),
       });
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: 'AI practice generation is unavailable. Set GEMINI_API_KEY in the backend environment.' });
-      expect(mocks.attemptCreate).not.toHaveBeenCalled();
+      expect(mocks.attemptCreate).toHaveBeenCalledOnce();
+      expect(mocks.dailyUsageUpdate).toHaveBeenCalledWith(expect.objectContaining({data:{mockInterviewCount:{decrement:1}}}));
     } finally {
       log.mockRestore();
     }
@@ -229,15 +265,139 @@ describe('authentication and candidate API routes', () => {
     try {
       const response = await fetch(`${baseUrl}/api/assessments/generate`, {
         method: 'POST',
-        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
-        body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 1, durationMinutes: 10 }),
+        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-002' },
+        body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 8, durationMinutes: 10 }),
       });
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: 'AI service is temporarily unavailable. Please try again shortly.' });
-      expect(mocks.attemptCreate).not.toHaveBeenCalled();
+      expect(mocks.attemptCreate).toHaveBeenCalledOnce();
     } finally {
       log.mockRestore();
     }
+  });
+
+  it('creates exactly 8 saved questions with one generation operation', async () => {
+    const savedQuestions = mockQuestions.map((question, index) => ({ ...question, id: `question-${index + 1}` }));
+    mocks.generateQuestions.mockImplementation(async (_input, options) => {
+      await options.onUsage({ operation: 'GENERATION', model: 'gemini-3.8-flash', statusCode: 200, succeeded: true, inputTokens: 100, outputTokens: 50, totalTokens: 150 });
+      return mockQuestions;
+    });
+    mocks.attemptUpdate.mockResolvedValue({ id: 'attempt-new', deadline: new Date(Date.now() + 60_000), questions: savedQuestions });
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-003' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+    });
+    const body = await response.json();
+    expect(response.status).toBe(201);
+    expect(body.questions).toHaveLength(8);
+    expect(body.questions[0]).not.toHaveProperty('answerIndex');
+    expect(mocks.generateQuestions).toHaveBeenCalledTimes(1);
+    expect(mocks.attemptCreate.mock.calls[0][0].data.status).toBe('GENERATING');
+    expect(mocks.dailyUsageUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ mockInterviewCount: { lt: 10 } }) }));
+    expect(mocks.geminiApiUsageCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ operation: 'GENERATION', model: 'gemini-3.8-flash', totalTokens: 150, succeeded: true }) });
+    expect(mocks.dailyUsageUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ geminiRequestCount: { increment: 1 }, geminiTotalTokens: { increment: 150 } }) }));
+  });
+
+  it('enforces the ten-interview daily cap before generating questions', async () => {
+    mocks.dailyUsageUpdateMany.mockResolvedValue({ count: 0 });
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-004' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+    });
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: 'You have reached today’s limit of 10 mock interviews. Try again after midnight UTC.' });
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
+    expect(mocks.attemptCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects generation requests that do not request exactly 8 questions', async () => {
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-006' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 7, durationMinutes: 15 }),
+    });
+    expect(response.status).toBe(400);
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
+    expect(mocks.dailyUsageUpsert).not.toHaveBeenCalled();
+  });
+
+  it('returns a friendly 429 when the Gemini project quota is exhausted', async () => {
+    mocks.generateQuestions.mockRejectedValue(Object.assign(new Error('AI_QUOTA_EXCEEDED'), { status: 429 }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+        method: 'POST',
+        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-007' },
+        body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+      });
+      expect(response.status).toBe(429);
+      expect(await response.json()).toEqual({ error: 'The Gemini API project has reached its current quota. Please try again after the quota resets.' });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('reuses an idempotent generation instead of calling Gemini again', async () => {
+    mocks.attemptFindFirst.mockResolvedValue({ id: 'attempt-existing', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000), questions: [] });
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-005' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+    });
+    expect(response.status).toBe(200);
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
+    expect(mocks.attemptCreate).not.toHaveBeenCalled();
+  });
+
+  it('submits all 8 answers and evaluates them together once', async () => {
+    const questions = mockQuestions.map((question, index) => ({ ...question, id: `question-${index + 1}`, position: index }));
+    const inProgress = { id: 'attempt-8', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000), dailyUsageId: 'daily-usage-1', questions, responses: [] };
+    const responses = questions.map((question, index) => ({ questionId: question.id, correct: index < 6 }));
+    const completed = { ...inProgress, status: 'SUBMITTED', score: 82, evaluation: mockEvaluation, responses };
+    mocks.attemptFindFirst.mockResolvedValueOnce(inProgress).mockResolvedValueOnce(completed);
+    mocks.evaluateInterviewAnswers.mockImplementation(async (_answers, options) => {
+      await options.onUsage({ operation: 'EVALUATION', model: 'gemini-3.8-flash', statusCode: 200, succeeded: true, inputTokens: 500, outputTokens: 250, totalTokens: 750 });
+      return mockEvaluation;
+    });
+    const response = await fetch(`${baseUrl}/api/assessments/attempt-8/submit`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: questions.map((question, index) => ({ questionId: question.id, selectedIndex: index === 0 ? 1 : 0 })) }),
+    });
+    const body = await response.json();
+    expect(response.status).toBe(200);
+    expect(body).toMatchObject({ overallScore: 82, score: 82, total: 8, strengths: ['Clear reasoning'], weaknesses: ['Add more tradeoff detail'] });
+    expect(body.questionScores).toHaveLength(8);
+    expect(mocks.evaluateInterviewAnswers).toHaveBeenCalledTimes(1);
+    expect(mocks.evaluateInterviewAnswers.mock.calls[0][0]).toHaveLength(8);
+    expect(mocks.responseUpsert).toHaveBeenCalledTimes(8);
+    expect(mocks.geminiApiUsageCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ operation: 'EVALUATION', attemptId: 'attempt-8', totalTokens: 750 }) });
+  });
+
+  it('returns saved evaluation on duplicate submission without a second Gemini call', async () => {
+    const questions = mockQuestions.map((question, index) => ({ ...question, id: `question-${index + 1}` }));
+    mocks.attemptFindFirst.mockResolvedValue({ id: 'attempt-complete', status: 'SUBMITTED', score: 82, evaluation: mockEvaluation, responses: questions.map((question, index) => ({ questionId: question.id, correct: index < 6 })), questions });
+    const response = await fetch(`${baseUrl}/api/assessments/attempt-complete/submit`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: [] }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).questionScores).toHaveLength(8);
+    expect(mocks.evaluateInterviewAnswers).not.toHaveBeenCalled();
+  });
+
+  it('does not start another evaluation while the first request is in progress', async () => {
+    mocks.attemptFindFirst.mockResolvedValue({ id: 'attempt-evaluating', status: 'EVALUATING', questions: mockQuestions });
+    const response = await fetch(`${baseUrl}/api/assessments/attempt-evaluating/submit`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ answers: [] }),
+    });
+    expect(response.status).toBe(409);
+    expect(mocks.evaluateInterviewAnswers).not.toHaveBeenCalled();
   });
 
   it('treats a concurrent unique-email conflict as a duplicate signup', async () => {
@@ -267,48 +427,6 @@ describe('authentication and candidate API routes', () => {
     expect(mocks.resumeFindMany.mock.calls[0][0].where.userId).toBe('candidate-7');
   });
 
-  it('keeps generated MCQ answer keys out of the candidate response', async () => {
-    mocks.generateQuestions.mockResolvedValue([{
-      prompt: 'Which React hook stores local component state?',
-      type: 'CONCEPTUAL',
-      options: ['useState', 'useEffect', 'useMemo', 'useRef'],
-      answerIndex: 0,
-      explanation: 'useState stores local state.',
-    }]);
-    mocks.attemptCreate.mockResolvedValue({
-      id: 'attempt-2',
-      deadline: new Date(Date.now() + 600_000),
-      questions: [{ id: 'question-2', prompt: 'Which React hook stores local component state?', type: 'CONCEPTUAL', options: ['useState', 'useEffect', 'useMemo', 'useRef'] }],
-    });
-    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
-      method: 'POST',
-      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 1, durationMinutes: 10 }),
-    });
-    const body = await response.json();
-    expect(response.status).toBe(201);
-    expect(body.questions[0].id).toBe('question-2');
-    expect(body.questions[0]).not.toHaveProperty('answerIndex');
-    expect(mocks.attemptCreate.mock.calls[0][0].data.questions.create[0].answerIndex).toBe(0);
-  });
-
-  it('scores submitted answers against stored keys and persists the result', async () => {
-    mocks.attemptFindFirst.mockResolvedValue({
-      id: 'attempt-3', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000),
-      questions: [{ id: 'question-3', answerIndex: 2 }],
-    });
-    const response = await fetch(`${baseUrl}/api/assessments/attempt-3/submit`, {
-      method: 'POST',
-      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers: [{ questionId: 'question-3', selectedIndex: 2 }] }),
-    });
-    const body = await response.json();
-    expect(response.status).toBe(200);
-    expect(body.score).toBe(100);
-    expect(mocks.responseUpsert).toHaveBeenCalled();
-    expect(mocks.attemptUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: 'SUBMITTED', score: 100 }) }));
-  });
-
   it('rejects a PDF upload whose content does not have a PDF signature', async () => {
     const form = new FormData();
     form.append('resume', new Blob(['not a PDF'], { type: 'application/pdf' }), 'resume.pdf');
@@ -320,12 +438,13 @@ describe('authentication and candidate API routes', () => {
   it('refuses answer submission after the saved attempt deadline', async () => {
     mocks.attemptFindFirst.mockResolvedValue({
       id: 'attempt-expired', status: 'IN_PROGRESS', deadline: new Date(Date.now() - 1_000),
-      questions: [{ id: 'question-expired', answerIndex: 1 }],
+      dailyUsageId: 'daily-usage-1',
+      questions: mockQuestions.map((question, index) => ({ ...question, id: `question-expired-${index + 1}` })),
     });
     const response = await fetch(`${baseUrl}/api/assessments/attempt-expired/submit`, {
       method: 'POST',
       headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ answers: [{ questionId: 'question-expired', selectedIndex: 1 }] }),
+      body: JSON.stringify({ answers: mockQuestions.map((_, index) => ({ questionId: `question-expired-${index + 1}`, selectedIndex: 1 })) }),
     });
     expect(response.status).toBe(410);
     expect(mocks.responseUpsert).not.toHaveBeenCalled();
