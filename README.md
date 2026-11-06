@@ -35,7 +35,7 @@ The development script uses `prisma migrate dev`, which is intended for developm
 
 ## Gemini configuration
 
-Set `GEMINI_API_KEY` in `backend/.env`; the code reads this exact server-side variable. `GEMINI_MODEL` is optional and defaults to `gemini-2.0-flash`. Never prefix the key with `VITE_` or put it in a frontend file. Without the key, AI routes return a clear service-not-configured response; provider calls have not been verified in this environment.
+Set `GEMINI_API_KEY` in `backend/.env`; the code reads this exact server-side variable. `GEMINI_MODEL` is optional and defaults to `gemini-3.8-flash`. Never prefix the key with `VITE_` or put it in a frontend file. Without the key, AI routes return a clear service-not-configured response; provider calls have not been verified in this environment.
 
 Generate a long random `JWT_SECRET` (at least 32 characters) for local auth. `PORT`, `FRONTEND_URL`, and `MAX_UPLOAD_MB` are also defined in the backend env template.
 
