@@ -60,11 +60,12 @@ vi.mock('../src/ai.js', () => ({
 const secret = 'test-only-secret-that-is-long-enough-32';
 let server: Server;
 let baseUrl: string;
+let app: any;
 
 beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = secret;
-  const { app } = await import('../src/index.js');
+  ({ app } = await import('../src/index.js'));
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
     server.once('listening', resolve);
@@ -117,6 +118,24 @@ const mockEvaluation = {
 };
 
 describe('authentication and candidate API routes', () => {
+  it('trusts exactly one Render proxy hop before rate limiting', async () => {
+    expect(app.get('trust proxy')).toBe(1);
+
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: {
+        ...bearer('candidate-7'),
+        'Content-Type': 'application/json',
+        'X-Forwarded-For': '203.0.113.10',
+      },
+      body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 8, durationMinutes: 10 }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'A valid Idempotency-Key header is required to start a mock interview.' });
+    expect(response.headers.get('ratelimit-limit')).toBe('100');
+  });
+
   it.each([
     ['missing', undefined],
     ['too short', 'short'],

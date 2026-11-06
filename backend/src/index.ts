@@ -9,7 +9,7 @@ import { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { evaluateInterviewAnswers, generateQuestions, type GeminiUsageEvent } from './ai.js';
 import path from 'node:path';
-export const prisma=new PrismaClient(); export const app=express();
+export const prisma=new PrismaClient(); export const app=express(); app.set('trust proxy',1);
 const secret=process.env.JWT_SECRET?.trim(); if(!secret||secret.length<32||/^(change[-_ ]?me|replace[-_ ]?with|your[-_ ]|example)/i.test(secret)) throw new Error('JWT_SECRET must be set to a non-placeholder value with at least 32 characters');
 const allowedOrigins=[...new Set(['https://regal-dusk-361215.netlify.app',...(process.env.FRONTEND_URL||'http://localhost:5173').split(',').map(origin=>origin.trim()).filter(Boolean)])];
 app.use(helmet()); app.use(cors({origin:(origin,callback)=>{if(!origin||allowedOrigins.includes(origin))return callback(null,true);callback(new Error('Origin is not allowed by CORS'))},credentials:true})); app.use(express.json({limit:'1mb'}));
