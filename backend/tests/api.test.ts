@@ -190,6 +190,39 @@ describe('authentication and candidate API routes', () => {
     }
   });
 
+  it('returns an actionable message when signup reaches a missing database table', async () => {
+    mocks.userFindUnique.mockRejectedValue(Object.assign(new Error('table details omitted'), { code: 'P2021' }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await fetch(`${baseUrl}/api/auth/signup`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Taylor Candidate', email: 'taylor@example.com', password: 'a-long-test-password' }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'Database schema is not initialized. Apply the pending Prisma migrations.' });
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('returns a clear configuration error when practice generation has no AI key', async () => {
+    mocks.generateQuestions.mockRejectedValue(new Error('AI_NOT_CONFIGURED'));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+        method: 'POST',
+        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 1, durationMinutes: 10 }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'AI practice generation is unavailable. Set GEMINI_API_KEY in the backend environment.' });
+      expect(mocks.attemptCreate).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('treats a concurrent unique-email conflict as a duplicate signup', async () => {
     mocks.userCreate.mockRejectedValue(Object.assign(new Error('unique constraint'), { code: 'P2002' }));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
