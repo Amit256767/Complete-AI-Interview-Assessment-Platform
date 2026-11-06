@@ -117,6 +117,37 @@ const mockEvaluation = {
 };
 
 describe('authentication and candidate API routes', () => {
+  it.each([
+    ['missing', undefined],
+    ['too short', 'short'],
+    ['too long', 'k'.repeat(129)],
+  ])('rejects a %s idempotency key', async (_label, key) => {
+    const headers: Record<string, string> = { ...bearer('candidate-7'), 'Content-Type': 'application/json' };
+    if (key !== undefined) headers['Idempotency-Key'] = key;
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 8, durationMinutes: 10 }),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.json()).toEqual({ error: 'A valid Idempotency-Key header is required to start a mock interview.' });
+    expect(mocks.attemptFindFirst).not.toHaveBeenCalled();
+    expect(mocks.dailyUsageUpsert).not.toHaveBeenCalled();
+  });
+
+  it('accepts a valid idempotency key and reserves one interview attempt', async () => {
+    mocks.generateQuestions.mockResolvedValue(mockQuestions);
+    mocks.attemptUpdate.mockResolvedValue({ id: 'attempt-new', deadline: new Date(Date.now() + 60_000), questions: mockQuestions.map((question, index) => ({ ...question, id: `question-${index + 1}` })) });
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': '123e4567-e89b-42d3-a456-426614174000' },
+      body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 8, durationMinutes: 10 }),
+    });
+    expect(response.status).toBe(201);
+    expect(mocks.attemptCreate.mock.calls[0][0].data.idempotencyKey).toBe('123e4567-e89b-42d3-a456-426614174000');
+    expect(mocks.generateQuestions).toHaveBeenCalledOnce();
+  });
+
   it('allows the production frontend origin and CORS preflight requests', async () => {
     const response = await fetch(`${baseUrl}/api/dashboard`, {
       method: 'OPTIONS',
