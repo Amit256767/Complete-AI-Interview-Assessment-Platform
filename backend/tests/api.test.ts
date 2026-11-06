@@ -223,6 +223,23 @@ describe('authentication and candidate API routes', () => {
     }
   });
 
+  it('returns a friendly response when Gemini remains unavailable', async () => {
+    mocks.generateQuestions.mockRejectedValue(Object.assign(new Error('AI_PROVIDER_UNAVAILABLE'), { status: 503 }));
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+        method: 'POST',
+        headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: 'Frontend developer', category: 'React', difficulty: 'BEGINNER', count: 1, durationMinutes: 10 }),
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: 'AI service is temporarily unavailable. Please try again shortly.' });
+      expect(mocks.attemptCreate).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('treats a concurrent unique-email conflict as a duplicate signup', async () => {
     mocks.userCreate.mockRejectedValue(Object.assign(new Error('unique constraint'), { code: 'P2002' }));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
