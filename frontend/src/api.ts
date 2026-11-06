@@ -19,12 +19,11 @@ export function apiUrl(path: string): string {
 export async function requestApi<T>(path: string, options: RequestInit = {}, token = ''): Promise<T> {
   let response: Response;
   try {
+    const headers = new Headers(options.headers);
+    if (token) headers.set('Authorization', `Bearer ${token}`);
     response = await fetch(apiUrl(path), {
       ...options,
-      headers: {
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...options.headers,
-      },
+      headers,
     });
   } catch {
     throw new Error(`Cannot reach the API at ${API_BASE_URL}. Check the backend service and network connection.`);
@@ -39,4 +38,30 @@ export async function requestApi<T>(path: string, options: RequestInit = {}, tok
   }
   if (data === null) throw new Error('The API returned an invalid response.');
   return data as T;
+}
+
+export function generateMockInterview<T>(input: {
+  idempotencyKey: string;
+  role: string;
+  category: string;
+  difficulty: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
+  count: 8;
+  durationMinutes: number;
+  resumeId?: string;
+}, token = ''): Promise<T> {
+  return requestApi<T>('/assessments/generate', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': input.idempotencyKey,
+    },
+    body: JSON.stringify({
+      role: input.role,
+      category: input.category,
+      difficulty: input.difficulty,
+      count: input.count,
+      durationMinutes: input.durationMinutes,
+      resumeId: input.resumeId,
+    }),
+  }, token);
 }
