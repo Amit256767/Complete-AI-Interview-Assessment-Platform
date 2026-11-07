@@ -16,6 +16,11 @@ export function apiUrl(path: string): string {
   return `${API_BASE_URL}/${route}`;
 }
 
+export function createIdempotencyKey(): string {
+  if (typeof globalThis.crypto?.randomUUID === 'function') return globalThis.crypto.randomUUID();
+  return `mock-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
+
 export async function requestApi<T>(path: string, options: RequestInit = {}, token = ''): Promise<T> {
   let response: Response;
   try {
@@ -41,7 +46,7 @@ export async function requestApi<T>(path: string, options: RequestInit = {}, tok
 }
 
 export function generateMockInterview<T>(input: {
-  idempotencyKey: string;
+  idempotencyKey?: string;
   role: string;
   category: string;
   difficulty: 'BEGINNER' | 'INTERMEDIATE' | 'ADVANCED';
@@ -49,11 +54,15 @@ export function generateMockInterview<T>(input: {
   durationMinutes: number;
   resumeId?: string;
 }, token = ''): Promise<T> {
+  const suppliedKey = input.idempotencyKey?.trim();
+  const idempotencyKey = suppliedKey && suppliedKey.length >= 8 && suppliedKey.length <= 128
+    ? suppliedKey
+    : createIdempotencyKey();
   return requestApi<T>('/assessments/generate', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'Idempotency-Key': input.idempotencyKey,
+      'Idempotency-Key': idempotencyKey,
     },
     body: JSON.stringify({
       role: input.role,

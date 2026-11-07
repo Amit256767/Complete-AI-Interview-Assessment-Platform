@@ -31,6 +31,8 @@ app.post('/api/resumes',auth,upload.single('resume'),safe(async(req,res)=>{if(!r
 app.post('/api/assessments/generate',auth,aiLimiter,safe(async(req,res)=>{
   const d=z.object({role:z.string().min(2).max(100),category:z.string().min(2).max(100),difficulty:z.enum(['BEGINNER','INTERMEDIATE','ADVANCED']),count:z.literal(8).optional(),durationMinutes:z.number().int().min(5).max(120),resumeId:z.string().optional(),jobDescription:z.string().max(3000).optional()}).parse(req.body);
   const idempotencyKey=String(req.headers['idempotency-key']||'').trim();
+  // Temporary deployment diagnostic: log only header presence/shape, never its value or request data.
+  console.info(`[api] route=/api/assessments/generate idempotency_header_present=${idempotencyKey.length>0} idempotency_key_length=${idempotencyKey.length} idempotency_key_valid=${idempotencyKey.length>=8&&idempotencyKey.length<=128}`);
   if(idempotencyKey.length<8||idempotencyKey.length>128)return res.status(400).json({error:'A valid Idempotency-Key header is required to start a mock interview.'});
   let resume:any=null;
   if(d.resumeId){resume=await prisma.resume.findFirst({where:{id:d.resumeId,userId:req.user.sub}});if(!resume)return res.status(404).json({error:'Resume not found.'})}

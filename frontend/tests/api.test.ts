@@ -28,6 +28,29 @@ describe('frontend API request headers', () => {
     expect(headers.get('Authorization')).toBe('Bearer candidate-token');
   });
 
+  it.each([undefined, 'short', 'x'.repeat(129)])('replaces a missing or invalid start key (%s) before fetch', async (key) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'attempt-1' }), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateMockInterview({
+      idempotencyKey: key,
+      role: 'Full-stack developer',
+      category: 'React',
+      difficulty: 'INTERMEDIATE',
+      count: 8,
+      durationMinutes: 15,
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const outgoingKey = new Headers(init.headers).get('Idempotency-Key');
+    expect(outgoingKey).toBeTruthy();
+    expect(outgoingKey!.length).toBeGreaterThanOrEqual(8);
+    expect(outgoingKey!.length).toBeLessThanOrEqual(128);
+  });
+
   it.each([
     ['Headers object', new Headers([['Idempotency-Key', 'headers-instance-key']])],
     ['tuple array', [['Idempotency-Key', 'tuple-array-key']] as [string, string][]],
