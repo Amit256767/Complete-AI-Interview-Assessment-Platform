@@ -11,7 +11,8 @@ import { evaluateInterviewAnswers, generateQuestions, type GeminiUsageEvent } fr
 import path from 'node:path';
 export const prisma=new PrismaClient(); export const app=express(); app.set('trust proxy',1);
 const secret=process.env.JWT_SECRET?.trim(); if(!secret||secret.length<32||/^(change[-_ ]?me|replace[-_ ]?with|your[-_ ]|example)/i.test(secret)) throw new Error('JWT_SECRET must be set to a non-placeholder value with at least 32 characters');
-const allowedOrigins=[...new Set(['https://regal-dusk-361215.netlify.app',...(process.env.FRONTEND_URL||'http://localhost:5173').split(',').map(origin=>origin.trim()).filter(Boolean)])];
+const configuredOrigins=(process.env.FRONTEND_URL||'').split(',').map(origin=>origin.trim().replace(/\/$/, '')).filter(Boolean);
+const allowedOrigins=[...new Set([...configuredOrigins,...(process.env.NODE_ENV==='production'?[]:['http://localhost:5173'])])];
 app.use(helmet()); app.use(cors({origin:(origin,callback)=>{if(!origin||allowedOrigins.includes(origin))return callback(null,true);callback(new Error('Origin is not allowed by CORS'))},credentials:true})); app.use(express.json({limit:'1mb'}));
 const aiLimiter=rateLimit({windowMs:60_000,max:process.env.NODE_ENV==='test'?100:10,standardHeaders:true,legacyHeaders:false});
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:Number(process.env.MAX_UPLOAD_MB||5)*1024*1024},fileFilter:(_req,file,cb)=>cb(null,file.mimetype==='application/pdf')});

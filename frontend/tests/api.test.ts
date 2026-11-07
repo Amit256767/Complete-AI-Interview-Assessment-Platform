@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE_URL, generateMockInterview, requestApi } from '../src/api';
+import { API_BASE_URL, apiUrl, generateMockInterview, requestApi } from '../src/api';
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe('frontend API request headers', () => {
+  it('normalizes API paths so the /api prefix appears only once', () => {
+    expect(apiUrl('/api/auth/login')).toBe(`${API_BASE_URL}/auth/login`);
+    expect(apiUrl('/auth/login')).toBe(`${API_BASE_URL}/auth/login`);
+  });
+
   it('sends Idempotency-Key on POST /assessments/generate', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'attempt-1' }), {
       status: 201,

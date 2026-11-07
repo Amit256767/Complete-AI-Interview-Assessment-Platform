@@ -1,18 +1,15 @@
-const PRODUCTION_API_URL = 'https://complete-ai-interview-assessment-platform.onrender.com/api';
-
 function normalizeApiBase(value: string): string {
   const trimmed = value.trim().replace(/\/+$/, '');
-  return trimmed.endsWith('/api') ? trimmed : `${trimmed}/api`;
+  if (!trimmed) throw new Error('VITE_API_URL must be set to the backend API URL.');
+  return `${trimmed.replace(/(?:\/api)+$/i, '')}/api`;
 }
 
-export const API_BASE_URL = normalizeApiBase(
-  import.meta.env.PROD
-    ? PRODUCTION_API_URL
-    : import.meta.env.VITE_API_URL || 'http://localhost:4000/api',
-);
+const configuredApiUrl = import.meta.env.VITE_API_URL ||
+  (import.meta.env.PROD ? 'https://complete-ai-interview-assessment-platform.onrender.com/api' : 'http://localhost:4000/api');
+export const API_BASE_URL = normalizeApiBase(configuredApiUrl);
 
 export function apiUrl(path: string): string {
-  const route = path.replace(/^\/+/, '').replace(/^api(?:\/|$)/, '');
+  const route = path.replace(/^\/+/, '').replace(/^(?:api\/?)+/i, '');
   return `${API_BASE_URL}/${route}`;
 }
 

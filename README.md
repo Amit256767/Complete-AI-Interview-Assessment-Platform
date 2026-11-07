@@ -52,7 +52,9 @@ Generate a long random `JWT_SECRET` (at least 32 characters) for local auth. `PO
 
 Create a Render **Web Service** with the repository root as its root directory (`.`) so the npm workspace manifest and root `package-lock.json` are available. Use build command `npm ci --include=dev && npm run db:generate --workspace @hireprep/backend && npm run build --workspace @hireprep/backend` and start command `npm start --workspace @hireprep/backend`. Prisma generation runs against `backend/prisma/schema.prisma`; TypeScript emits the server to `backend/dist/src/index.js`, which the backend start script runs. The API binds to `0.0.0.0` and uses Render's `PORT` (defaulting to 4000 locally).
 
-Set `DATABASE_URL`, a unique random `JWT_SECRET` of at least 32 characters, `GEMINI_API_KEY`, and `FRONTEND_URL` in Render. Set `FRONTEND_URL` to the exact deployed Netlify origin (scheme and hostname, no path or trailing slash); multiple origins may be comma-separated. `GEMINI_MODEL` and `MAX_UPLOAD_MB` are optional. Use `/api/health` as the health check path. Database migrations are not run on startup; review and apply checked-in migrations separately.
+Set `DATABASE_URL`, a unique random `JWT_SECRET` of at least 32 characters, `GEMINI_API_KEY`, and `FRONTEND_URL` in Render. Set `FRONTEND_URL` to the exact deployed Vercel origin (scheme and hostname, no path or trailing slash); multiple origins may be comma-separated. The backend only allows configured origins and localhost during non-production runs. `GEMINI_MODEL` and `MAX_UPLOAD_MB` are optional. Use `/api/health` as the health check path. Database migrations are not run on startup; review and apply checked-in migrations separately.
+
+For Vercel, set `VITE_API_URL=https://complete-ai-interview-assessment-platform.onrender.com/api` in the frontend project's Production environment (and Preview if previews should use this backend), then redeploy. The frontend API client reads this variable at build time and normalizes the `/api` suffix. Do not put backend secrets in Vercel frontend variables; `VITE_` values are public.
 ## Data flow and API
 
 Authenticated endpoints use `Authorization: Bearer <token>`.

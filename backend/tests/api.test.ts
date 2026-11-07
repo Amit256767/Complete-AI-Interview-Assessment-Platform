@@ -65,6 +65,7 @@ let app: any;
 beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = secret;
+  process.env.FRONTEND_URL = 'https://hireprep-example.vercel.app';
   ({ app } = await import('../src/index.js'));
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
@@ -171,13 +172,13 @@ describe('authentication and candidate API routes', () => {
     const response = await fetch(`${baseUrl}/api/dashboard`, {
       method: 'OPTIONS',
       headers: {
-        Origin: 'https://regal-dusk-361215.netlify.app',
+        Origin: 'https://hireprep-example.vercel.app',
         'Access-Control-Request-Method': 'GET',
         'Access-Control-Request-Headers': 'authorization',
       },
     });
     expect(response.status).toBe(204);
-    expect(response.headers.get('access-control-allow-origin')).toBe('https://regal-dusk-361215.netlify.app');
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://hireprep-example.vercel.app');
     expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization');
     expect(response.headers.get('access-control-allow-methods')).toContain('GET');
   });
