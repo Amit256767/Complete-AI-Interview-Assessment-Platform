@@ -111,6 +111,39 @@ describe('combined mock interview Gemini calls', () => {
     expect(mocks.generateContent.mock.calls[0][0]).toBe('gemini-3.8-flash');
   });
 
+  it('logs safe diagnostics for provider errors without logging raw error details or secrets', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const apiKey = 'super-secret-gemini-key';
+    mocks.generateContent.mockRejectedValue(Object.assign(
+      new Error(`API key ${apiKey} rejected: private provider response`),
+      { status: 403, errorDetails: [{ reason: 'PERMISSION_DENIED', message: `key=${apiKey}` }] },
+    ));
+
+    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ status: 503 });
+
+    const log = warn.mock.calls.map(([message]) => String(message)).join('\n');
+    expect(log).toContain('status=403');
+    expect(log).toContain('diagnosis=check_api_key_or_permissions');
+    expect(log).toContain('provider_reason=PERMISSION_DENIED');
+    expect(log).not.toContain(apiKey);
+    expect(log).not.toContain('private provider response');
+  });
+
+  it('classifies model, request, quota, and provider availability from HTTP status', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    for (const [status, diagnosis] of [
+      [400, 'check_request_format_or_project_prerequisites'],
+      [404, 'check_model_name_or_endpoint'],
+      [429, 'project_quota_exhausted'],
+      [503, 'provider_unavailable'],
+    ] as const) {
+      vi.clearAllMocks();
+      mocks.generateContent.mockRejectedValue(Object.assign(new Error('provider failure'), { status }));
+      await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toBeDefined();
+      expect(warn.mock.calls.map(([message]) => String(message)).join('\n')).toContain(`diagnosis=${diagnosis}`);
+    }
+  });
+
   it('retries a per-minute 429 but stops on a daily quota 429', async () => {
     mocks.generateContent
       .mockRejectedValueOnce(Object.assign(new Error('rate_limit_exceeded: requests per minute'), { status: 429, errorDetails: { reason: 'rate_limit_exceeded' } }))

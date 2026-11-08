@@ -108,6 +108,38 @@ function getErrorCode(error: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+const SAFE_PROVIDER_REASONS = new Set([
+  'API_KEY_INVALID', 'INVALID_ARGUMENT', 'MODEL_NOT_FOUND', 'NOT_FOUND', 'PERMISSION_DENIED',
+  'QUOTA_EXCEEDED', 'RATE_LIMIT_EXCEEDED', 'RESOURCE_EXHAUSTED', 'UNAUTHENTICATED',
+  'SERVICE_UNAVAILABLE', 'INTERNAL', 'FAILED_PRECONDITION', 'billing_disabled',
+]);
+
+function getSafeProviderReason(error: unknown): string | undefined {
+  if (!error || typeof error !== 'object') return undefined;
+  const details = (error as { errorDetails?: unknown }).errorDetails;
+  const candidates: unknown[] = [];
+  const collect = (value: unknown, depth = 0) => {
+    if (depth > 3 || !value || typeof value !== 'object') return;
+    if (Array.isArray(value)) return value.forEach(item => collect(item, depth + 1));
+    const record = value as Record<string, unknown>;
+    candidates.push(record.reason, record.status, record.code);
+    Object.values(record).forEach(item => collect(item, depth + 1));
+  };
+  collect(details);
+  return candidates.find((value): value is string => typeof value === 'string' && SAFE_PROVIDER_REASONS.has(value));
+}
+
+function diagnoseProviderError(error: unknown, status: number | undefined): string {
+  const reason = getSafeProviderReason(error)?.toLowerCase() ?? '';
+  if (status === 401 || status === 403 || /api_key_invalid|unauthenticated|permission_denied/.test(reason)) return 'check_api_key_or_permissions';
+  if (status === 404 || /model_not_found|not_found/.test(reason)) return 'check_model_name_or_endpoint';
+  if (status === 400 || /invalid_argument|failed_precondition/.test(reason)) return 'check_request_format_or_project_prerequisites';
+  if (status === 429) return get429Kind(error) === 'quota' ? 'project_quota_exhausted' : 'rate_limited';
+  if (status !== undefined && status >= 500) return 'provider_unavailable';
+  if (status === undefined) return 'network_or_timeout';
+  return 'provider_request_rejected';
+}
+
 function get429Kind(error: unknown): 'rate_limit' | 'quota' {
   if (!error || typeof error !== 'object') return 'quota';
   const value = error as { message?: unknown; errorDetails?: unknown; statusText?: unknown };
@@ -209,7 +241,8 @@ async function requestWithRetries<T>(
       const quota = status === 429 && get429Kind(error) === 'quota';
       const rateLimited = status === 429 && !quota;
       const retryable = !quota && (rateLimited || isRetryable(error));
-      console.warn(`[gemini] request failed model=${modelName} status=${status ?? 'network'} attempt=${attempt}/${settings.retryAttempts} retryable=${retryable}${quota ? ' quota=exhausted' : ''}`);
+      const safeReason = getSafeProviderReason(error);
+      console.warn(`[gemini] request failed model=${modelName} status=${status ?? 'network'} diagnosis=${diagnoseProviderError(error, status)}${safeReason ? ` provider_reason=${safeReason}` : ''} attempt=${attempt}/${settings.retryAttempts} retryable=${retryable}${quota ? ' quota=exhausted' : ''}`);
 
       if (quota) throw new GeminiQuotaError(false);
       if (!retryable) throw new GeminiServiceUnavailableError(false);
