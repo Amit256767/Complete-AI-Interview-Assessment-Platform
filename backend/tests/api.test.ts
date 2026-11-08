@@ -66,6 +66,7 @@ beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = secret;
   process.env.FRONTEND_URL = 'https://hireprep-example.vercel.app';
+  process.env.CLIENT_URL = 'https://hireprep-example.netlify.app';
   ({ app } = await import('../src/index.js'));
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
@@ -181,6 +182,17 @@ describe('authentication and candidate API routes', () => {
     expect(response.headers.get('access-control-allow-origin')).toBe('https://hireprep-example.vercel.app');
     expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization');
     expect(response.headers.get('access-control-allow-methods')).toContain('GET');
+  });
+
+  it('allows origins from CLIENT_URL and localhost, while rejecting unknown origins', async () => {
+    const netlify = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'https://hireprep-example.netlify.app' } });
+    expect(netlify.headers.get('access-control-allow-origin')).toBe('https://hireprep-example.netlify.app');
+
+    const localhost = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'http://localhost:5173' } });
+    expect(localhost.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
+
+    const unknown = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'https://not-allowed.example' } });
+    expect(unknown.headers.get('access-control-allow-origin')).toBeNull();
   });
 
   it('rejects unauthenticated access to the dashboard', async () => {
