@@ -105,7 +105,8 @@ function getErrorCode(error: unknown): string | undefined {
   if (!error || typeof error !== 'object') return undefined;
   const value = error as { code?: unknown; cause?: { code?: unknown } };
   const code = value.code ?? value.cause?.code;
-  return typeof code === 'string' ? code : undefined;
+  if (typeof code === 'string') return code;
+  return error instanceof Error && error.message === 'AI_TIMEOUT' ? 'ETIMEDOUT' : undefined;
 }
 
 const SAFE_PROVIDER_REASONS = new Set([

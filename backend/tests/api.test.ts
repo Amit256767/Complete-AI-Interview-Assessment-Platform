@@ -414,6 +414,19 @@ describe('authentication and candidate API routes', () => {
     expect(mocks.attemptCreate).not.toHaveBeenCalled();
   });
 
+  it('keeps duplicate protection for an idempotency key whose generation already failed', async () => {
+    mocks.attemptFindFirst.mockResolvedValue({ id: 'attempt-failed', status: 'GENERATION_FAILED', questions: [] });
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-failed-key-01' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'This request was already used. Start a new mock interview.' });
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
+    expect(mocks.attemptCreate).not.toHaveBeenCalled();
+  });
+
   it('submits all 8 answers and evaluates them together once', async () => {
     const questions = mockQuestions.map((question, index) => ({ ...question, id: `question-${index + 1}`, position: index }));
     const inProgress = { id: 'attempt-8', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000), dailyUsageId: 'daily-usage-1', questions, responses: [] };

@@ -33,6 +33,15 @@ describe('frontend API request headers', () => {
     expect(headers.get('Authorization')).toBe('Bearer candidate-token');
   });
 
+  it('preserves HTTP status on API failures so the caller can distinguish them from transport failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'AI service is temporarily unavailable. Please try again shortly.' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+    await expect(requestApi('/assessments/generate', { method: 'POST' }))
+      .rejects.toMatchObject({ status: 503, message: 'AI service is temporarily unavailable. Please try again shortly.' });
+  });
+
   it.each([undefined, 'short', 'x'.repeat(129)])('replaces a missing or invalid start key (%s) before fetch', async (key) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'attempt-1' }), {
       status: 201,

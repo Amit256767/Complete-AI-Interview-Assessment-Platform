@@ -36,7 +36,9 @@ export async function requestApi<T>(path: string, options: RequestInit = {}, tok
     ? await response.json().catch(() => null)
     : null;
   if (!response.ok) {
-    throw new Error(data?.error || `API request failed (${response.status}).`);
+    const error = new Error(data?.error || `API request failed (${response.status}).`) as Error & { status: number };
+    error.status = response.status;
+    throw error;
   }
   if (data === null) throw new Error('The API returned an invalid response.');
   return data as T;

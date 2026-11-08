@@ -157,6 +157,17 @@ describe('combined mock interview Gemini calls', () => {
     expect(mocks.generateContent).toHaveBeenCalledTimes(1);
   });
 
+  it('retries a timed out generation and then uses the configured fallback model', async () => {
+    vi.useFakeTimers();
+    vi.stubEnv('GEMINI_RETRY_ATTEMPTS', '1');
+    mocks.generateContent.mockImplementationOnce(() => new Promise(() => undefined)).mockResolvedValueOnce(success(questions));
+    const result = generateQuestions(generationInput, { operation: 'GENERATION' });
+    await vi.advanceTimersByTimeAsync(25_001);
+    await expect(result).resolves.toHaveLength(8);
+    expect(mocks.generateContent.mock.calls.map(([model]) => model)).toEqual(['gemini-3.8-flash', 'gemini-3.7-flash']);
+    vi.useRealTimers();
+  });
+
   it('rejects malformed Gemini output that is not exactly eight questions', async () => {
     mocks.generateContent.mockResolvedValue(success(questions.slice(0, 7)));
     await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ message: 'AI_PROVIDER_UNAVAILABLE', status: 503 });
