@@ -81,6 +81,12 @@ describe('combined mock interview Gemini calls', () => {
     ]));
   });
 
+  it('treats a whitespace-only API key as missing configuration', async () => {
+    vi.stubEnv('GEMINI_API_KEY', '   ');
+    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ message: 'AI_NOT_CONFIGURED' });
+    expect(mocks.generateContent).not.toHaveBeenCalled();
+  });
+
   it('retries transient 503 responses with one API call per attempt', async () => {
     mocks.generateContent.mockRejectedValueOnce(Object.assign(new Error('temporary outage'), { status: 503 })).mockResolvedValueOnce(success(questions));
     await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).resolves.toHaveLength(8);
@@ -106,7 +112,12 @@ describe('combined mock interview Gemini calls', () => {
 
   it.each([400, 401, 403, 404])('does not retry or fall back for non-retryable HTTP %i errors', async status => {
     mocks.generateContent.mockRejectedValue(Object.assign(new Error('provider request rejected'), { status }));
-    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ status: 503 });
+    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({
+      status: 503,
+      providerStatus: status,
+      diagnosis: status === 401 || status === 403 ? 'check_api_key_or_permissions'
+        : status === 404 ? 'check_model_name_or_endpoint' : 'check_request_format_or_project_prerequisites',
+    });
     expect(mocks.generateContent).toHaveBeenCalledTimes(1);
     expect(mocks.generateContent.mock.calls[0][0]).toBe('gemini-3.8-flash');
   });

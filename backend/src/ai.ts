@@ -60,7 +60,12 @@ type GeminiSettings = {
 
 class GeminiServiceUnavailableError extends Error {
   readonly status = 503;
-  constructor(readonly retryable: boolean) {
+  constructor(
+    readonly retryable: boolean,
+    readonly providerStatus?: number,
+    readonly diagnosis?: string,
+    readonly providerReason?: string,
+  ) {
     super('AI_PROVIDER_UNAVAILABLE');
     this.name = 'GeminiServiceUnavailableError';
   }
@@ -80,7 +85,7 @@ function positiveInteger(value: string | undefined, fallback: number, max: numbe
 }
 
 function getSettings(): GeminiSettings {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY?.trim();
   if (!apiKey) throw new Error('AI_NOT_CONFIGURED');
 
   const primaryModel = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
@@ -198,7 +203,7 @@ function parseProviderJson<T extends z.ZodTypeAny>(schema: T, text: string): z.i
   const parsed = schema.safeParse(value);
   if (!parsed.success) {
     console.warn('[gemini] response validation failed reason=schema_mismatch');
-    throw new GeminiServiceUnavailableError(false);
+    throw new GeminiServiceUnavailableError(false, undefined, 'response_schema_invalid');
   }
   return parsed.data;
 }
@@ -246,10 +251,10 @@ async function requestWithRetries<T>(
       console.warn(`[gemini] request failed model=${modelName} status=${status ?? 'network'} diagnosis=${diagnoseProviderError(error, status)}${safeReason ? ` provider_reason=${safeReason}` : ''} attempt=${attempt}/${settings.retryAttempts} retryable=${retryable}${quota ? ' quota=exhausted' : ''}`);
 
       if (quota) throw new GeminiQuotaError(false);
-      if (!retryable) throw new GeminiServiceUnavailableError(false);
+      if (!retryable) throw new GeminiServiceUnavailableError(false, status, diagnoseProviderError(error, status), safeReason);
       if (attempt === settings.retryAttempts) {
         if (rateLimited) throw new GeminiQuotaError(true);
-        throw new GeminiServiceUnavailableError(true);
+        throw new GeminiServiceUnavailableError(true, status, diagnoseProviderError(error, status), safeReason);
       }
 
       const delayMs = retryDelayMs(attempt, settings.retryBaseDelayMs);

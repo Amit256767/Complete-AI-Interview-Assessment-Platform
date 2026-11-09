@@ -347,7 +347,9 @@ describe('authentication and candidate API routes', () => {
   });
 
   it('returns a friendly response when Gemini remains unavailable', async () => {
-    mocks.generateQuestions.mockRejectedValue(Object.assign(new Error('AI_PROVIDER_UNAVAILABLE'), { status: 503 }));
+    mocks.generateQuestions.mockRejectedValue(Object.assign(new Error('AI_PROVIDER_UNAVAILABLE'), {
+      status: 503, providerStatus: 403, diagnosis: 'check_api_key_or_permissions', providerReason: 'PERMISSION_DENIED',
+    }));
     const log = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       const response = await fetch(`${baseUrl}/api/assessments/generate`, {
@@ -358,6 +360,7 @@ describe('authentication and candidate API routes', () => {
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: 'AI service is temporarily unavailable. Please try again shortly.' });
       expect(mocks.attemptCreate).toHaveBeenCalledOnce();
+      expect(log.mock.calls.map(([message]) => String(message)).join('\n')).toContain('provider_status=403 provider_diagnosis=check_api_key_or_permissions provider_reason=PERMISSION_DENIED');
     } finally {
       log.mockRestore();
     }
