@@ -11,9 +11,16 @@ import { evaluateInterviewAnswers, generateQuestions, type GeminiUsageEvent } fr
 import path from 'node:path';
 export const prisma=new PrismaClient(); export const app=express(); app.set('trust proxy',1);
 const secret=process.env.JWT_SECRET?.trim(); if(!secret||secret.length<32||/^(change[-_ ]?me|replace[-_ ]?with|your[-_ ]|example)/i.test(secret)) throw new Error('JWT_SECRET must be set to a non-placeholder value with at least 32 characters');
-const configuredOrigins=['FRONTEND_URL','CLIENT_URL'].flatMap(name=>(process.env[name]||'').split(',')).map(origin=>origin.trim().replace(/\/$/, '')).filter(Boolean);
-const allowedOrigins=[...new Set([...configuredOrigins,'http://localhost:5173','http://localhost:3000'])];
-app.use(helmet()); app.use(cors({origin:(origin,callback)=>{if(!origin||allowedOrigins.includes(origin))return callback(null,true);callback(new Error('Origin is not allowed by CORS'))},credentials:true})); app.use(express.json({limit:'1mb'}));
+const configuredOrigins=['FRONTEND_URL','CLIENT_URL'].flatMap(name=>(process.env[name]||'').split(',')).map(origin=>origin.trim().replace(/\/+$/, '')).filter(Boolean);
+const allowedOrigins=[...new Set([...configuredOrigins,'https://complete-ai-interview-assessment-pl.vercel.app','http://localhost:5173','http://localhost:3000'])];
+app.use(helmet());
+app.use(cors({
+  origin:(origin,callback)=>{if(!origin||allowedOrigins.includes(origin))return callback(null,true);callback(new Error('Origin is not allowed by CORS'))},
+  credentials:true,
+  methods:['GET','HEAD','POST','PUT','PATCH','DELETE','OPTIONS'],
+  allowedHeaders:['Authorization','Content-Type','Idempotency-Key'],
+}));
+app.use(express.json({limit:'1mb'}));
 const aiLimiter=rateLimit({windowMs:60_000,max:process.env.NODE_ENV==='test'?100:10,standardHeaders:true,legacyHeaders:false});
 const upload=multer({storage:multer.memoryStorage(),limits:{fileSize:Number(process.env.MAX_UPLOAD_MB||5)*1024*1024},fileFilter:(_req,file,cb)=>cb(null,file.mimetype==='application/pdf')});
 const auth=(req:any,res:any,next:any)=>{try{const token=(req.headers.authorization||'').replace(/^Bearer /,'');req.user=jwt.verify(token,secret);next()}catch{res.status(401).json({error:'Please sign in to continue.'})}};

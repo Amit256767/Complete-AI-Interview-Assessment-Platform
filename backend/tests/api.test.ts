@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   dailyUsageUpdate: vi.fn(),
   dailyUsageUpdateMany: vi.fn(),
   geminiApiUsageCreate: vi.fn(),
+  queryRaw: vi.fn(),
   generateQuestions: vi.fn(),
   evaluateInterviewAnswers: vi.fn(),
 }));
@@ -42,6 +43,7 @@ vi.mock('@prisma/client', () => ({
       create: mocks.resumeCreate,
     };
     question = { findMany: vi.fn() };
+    $queryRaw = mocks.queryRaw;
     $transaction = (callback: (tx: unknown) => unknown) =>
       callback({
         response: { upsert: mocks.responseUpsert },
@@ -65,8 +67,8 @@ let app: any;
 beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = secret;
-  process.env.FRONTEND_URL = 'https://hireprep-example.vercel.app';
-  process.env.CLIENT_URL = 'https://hireprep-example.netlify.app';
+  process.env.FRONTEND_URL = 'https://hireprep-example.vercel.app, https://complete-ai-interview-assessment-pl.vercel.app/';
+  process.env.CLIENT_URL = 'https://hireprep-example.netlify.app, https://secondary-client.example';
   ({ app } = await import('../src/index.js'));
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
@@ -95,6 +97,7 @@ beforeEach(() => {
   mocks.geminiApiUsageCreate.mockResolvedValue({ id: 'gemini-usage-1' });
   mocks.resumeFindMany.mockResolvedValue([]);
   mocks.generateQuestions.mockResolvedValue([]);
+  mocks.queryRaw.mockResolvedValue([{ '?column?': 1 }]);
 });
 
 const bearer = (userId: string) => ({ Authorization: `Bearer ${jwt.sign({ sub: userId }, secret)}` });
@@ -120,6 +123,17 @@ const mockEvaluation = {
 };
 
 describe('authentication and candidate API routes', () => {
+  it('returns database health from GET /api/health and leaves GET /api unregistered', async () => {
+    process.env.DATABASE_URL = 'postgresql://test';
+    const health = await fetch(`${baseUrl}/api/health`);
+    expect(health.status).toBe(200);
+    expect(await health.json()).toEqual({ status: 'ok', database: 'connected', ai: false });
+    expect(mocks.queryRaw).toHaveBeenCalledOnce();
+
+    const apiRoot = await fetch(`${baseUrl}/api`);
+    expect(apiRoot.status).toBe(404);
+  });
+
   it('trusts exactly one Render proxy hop before rate limiting', async () => {
     expect(app.get('trust proxy')).toBe(1);
 
@@ -169,24 +183,34 @@ describe('authentication and candidate API routes', () => {
     expect(mocks.generateQuestions).toHaveBeenCalledOnce();
   });
 
-  it('allows the production frontend origin and CORS preflight requests', async () => {
-    const response = await fetch(`${baseUrl}/api/dashboard`, {
+  it('allows the exact production frontend origin and assessment preflight headers', async () => {
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
       method: 'OPTIONS',
       headers: {
-        Origin: 'https://hireprep-example.vercel.app',
-        'Access-Control-Request-Method': 'GET',
-        'Access-Control-Request-Headers': 'authorization',
+        Origin: 'https://complete-ai-interview-assessment-pl.vercel.app',
+        'Access-Control-Request-Method': 'POST',
+        'Access-Control-Request-Headers': 'authorization,content-type,idempotency-key',
       },
     });
     expect(response.status).toBe(204);
-    expect(response.headers.get('access-control-allow-origin')).toBe('https://hireprep-example.vercel.app');
-    expect(response.headers.get('access-control-allow-headers')?.toLowerCase()).toContain('authorization');
-    expect(response.headers.get('access-control-allow-methods')).toContain('GET');
+    expect(response.headers.get('access-control-allow-origin')).toBe('https://complete-ai-interview-assessment-pl.vercel.app');
+    expect(response.headers.get('access-control-allow-credentials')).toBe('true');
+    const allowedHeaders = response.headers.get('access-control-allow-headers')?.toLowerCase() || '';
+    expect(allowedHeaders).toContain('authorization');
+    expect(allowedHeaders).toContain('content-type');
+    expect(allowedHeaders).toContain('idempotency-key');
+    expect(response.headers.get('access-control-allow-methods')).toContain('POST');
   });
 
   it('allows origins from CLIENT_URL and localhost, while rejecting unknown origins', async () => {
+    const frontendCsvEntry = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'https://hireprep-example.vercel.app' } });
+    expect(frontendCsvEntry.headers.get('access-control-allow-origin')).toBe('https://hireprep-example.vercel.app');
+
     const netlify = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'https://hireprep-example.netlify.app' } });
     expect(netlify.headers.get('access-control-allow-origin')).toBe('https://hireprep-example.netlify.app');
+
+    const clientCsvEntry = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'https://secondary-client.example' } });
+    expect(clientCsvEntry.headers.get('access-control-allow-origin')).toBe('https://secondary-client.example');
 
     const localhost = await fetch(`${baseUrl}/api/health`, { headers: { Origin: 'http://localhost:5173' } });
     expect(localhost.headers.get('access-control-allow-origin')).toBe('http://localhost:5173');
