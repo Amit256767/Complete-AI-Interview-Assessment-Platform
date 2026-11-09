@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { API_BASE_URL, apiUrl, generateMockInterview, requestApi } from '../src/api';
+import { API_BASE_URL, apiUrl, checkApiHealth, generateMockInterview, requestApi, resolveApiBaseUrl } from '../src/api';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -7,6 +7,34 @@ describe('frontend API request headers', () => {
   it('normalizes API paths so the /api prefix appears only once', () => {
     expect(apiUrl('/api/auth/login')).toBe(`${API_BASE_URL}/auth/login`);
     expect(apiUrl('/auth/login')).toBe(`${API_BASE_URL}/auth/login`);
+  });
+
+  it('checks the Render API health endpoint using the normalized production base URL', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'ok', database: 'connected', ai: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(checkApiHealth()).resolves.toEqual({ status: 'ok', database: 'connected', ai: true });
+    expect(fetchMock.mock.calls[0][0]).toBe(`${API_BASE_URL}/health`);
+    expect(resolveApiBaseUrl(undefined, true)).toBe('https://complete-ai-interview-assessment-platform.onrender.com/api');
+    expect(resolveApiBaseUrl('https://example.onrender.com', true)).toBe('https://example.onrender.com/api');
+  });
+
+  it('keeps an HTTP 503 health response distinguishable from a network or CORS failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: 'unavailable', database: 'unavailable' }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    await expect(checkApiHealth()).rejects.toMatchObject({ status: 503, message: 'API request failed (503).' });
+  });
+
+  it('describes browser access failures as possible CORS failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
+
+    await expect(checkApiHealth()).rejects.toThrow(/Vercel site's exact origin is allowed by the backend CORS settings/);
   });
 
   it('sends Idempotency-Key on POST /assessments/generate', async () => {

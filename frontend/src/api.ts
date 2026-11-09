@@ -4,9 +4,14 @@ function normalizeApiBase(value: string): string {
   return `${trimmed.replace(/(?:\/api)+$/i, '')}/api`;
 }
 
-const configuredApiUrl = import.meta.env.VITE_API_URL ||
-  (import.meta.env.PROD ? 'https://complete-ai-interview-assessment-platform.onrender.com/api' : 'http://localhost:4000/api');
-export const API_BASE_URL = normalizeApiBase(configuredApiUrl);
+export function resolveApiBaseUrl(configuredUrl: string | undefined, isProduction: boolean): string {
+  const value = configuredUrl || (isProduction
+    ? 'https://complete-ai-interview-assessment-platform.onrender.com/api'
+    : 'http://localhost:4000/api');
+  return normalizeApiBase(value);
+}
+
+export const API_BASE_URL = resolveApiBaseUrl(import.meta.env.VITE_API_URL, import.meta.env.PROD);
 
 export function apiUrl(path: string): string {
   const route = path.replace(/^\/+/, '').replace(/^(?:api\/?)+/i, '');
@@ -28,7 +33,7 @@ export async function requestApi<T>(path: string, options: RequestInit = {}, tok
       headers,
     });
   } catch {
-    throw new Error(`Cannot reach the API at ${API_BASE_URL}. Check the backend service and network connection.`);
+    throw new Error(`The browser could not access the API at ${API_BASE_URL}. Check the network and confirm this Vercel site's exact origin is allowed by the backend CORS settings.`);
   }
 
   const contentType = response.headers.get('content-type') || '';
@@ -42,6 +47,10 @@ export async function requestApi<T>(path: string, options: RequestInit = {}, tok
   }
   if (data === null) throw new Error('The API returned an invalid response.');
   return data as T;
+}
+
+export function checkApiHealth(): Promise<{ status: string; database?: string; ai?: boolean }> {
+  return requestApi('/health');
 }
 
 export function generateMockInterview<T>(input: {

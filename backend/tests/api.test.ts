@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   dailyUsageUpsert: vi.fn(),
   dailyUsageUpdate: vi.fn(),
   dailyUsageUpdateMany: vi.fn(),
+  geminiDailyQuotaUpsert: vi.fn(),
+  geminiDailyQuotaUpdateMany: vi.fn(),
   geminiApiUsageCreate: vi.fn(),
   queryRaw: vi.fn(),
   generateQuestions: vi.fn(),
@@ -50,6 +52,7 @@ vi.mock('@prisma/client', () => ({
         attempt: { update: mocks.attemptUpdate, updateMany: mocks.attemptUpdateMany, create: mocks.attemptCreate, findFirst: mocks.attemptFindFirst },
         dailyUsage: { upsert: mocks.dailyUsageUpsert, update: mocks.dailyUsageUpdate, updateMany: mocks.dailyUsageUpdateMany },
         geminiApiUsage: { create: mocks.geminiApiUsageCreate },
+        geminiDailyQuota: { upsert: mocks.geminiDailyQuotaUpsert, updateMany: mocks.geminiDailyQuotaUpdateMany },
       });
   },
 }));
@@ -94,6 +97,8 @@ beforeEach(() => {
   mocks.dailyUsageUpsert.mockResolvedValue({ id: 'daily-usage-1' });
   mocks.dailyUsageUpdate.mockResolvedValue({ id: 'daily-usage-1' });
   mocks.dailyUsageUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.geminiDailyQuotaUpsert.mockResolvedValue({ id: 'gemini-daily-quota-1' });
+  mocks.geminiDailyQuotaUpdateMany.mockResolvedValue({ count: 1 });
   mocks.geminiApiUsageCreate.mockResolvedValue({ id: 'gemini-usage-1' });
   mocks.resumeFindMany.mockResolvedValue([]);
   mocks.generateQuestions.mockResolvedValue([]);
@@ -389,6 +394,23 @@ describe('authentication and candidate API routes', () => {
     expect(mocks.dailyUsageUpdate).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ geminiRequestCount: { increment: 1 }, geminiTotalTokens: { increment: 150 } }) }));
   });
 
+  it('reserves the shared Gemini daily budget before sending a provider request', async () => {
+    mocks.generateQuestions.mockImplementation(async (_input, options) => {
+      await options.beforeRequest();
+      return mockQuestions;
+    });
+    mocks.geminiDailyQuotaUpdateMany.mockResolvedValueOnce({ count: 0 });
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'quota-budget-key-1' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+    });
+    expect(response.status).toBe(429);
+    expect(await response.json()).toEqual({ error: 'Today’s AI request limit has been reached. Please try again after the quota resets.' });
+    expect(mocks.geminiDailyQuotaUpsert).toHaveBeenCalledOnce();
+    expect(mocks.generateQuestions).toHaveBeenCalledOnce();
+  });
+
   it('enforces the ten-interview daily cap before generating questions', async () => {
     mocks.dailyUsageUpdateMany.mockResolvedValue({ count: 0 });
     const response = await fetch(`${baseUrl}/api/assessments/generate`, {
@@ -430,15 +452,29 @@ describe('authentication and candidate API routes', () => {
   });
 
   it('reuses an idempotent generation instead of calling Gemini again', async () => {
-    mocks.attemptFindFirst.mockResolvedValue({ id: 'attempt-existing', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000), questions: [] });
+    mocks.attemptFindFirst.mockResolvedValue({ id: 'attempt-existing', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000), questions: mockQuestions.map((question, index) => ({ ...question, id: `saved-question-${index + 1}`, position: index })) });
     const response = await fetch(`${baseUrl}/api/assessments/generate`, {
       method: 'POST',
       headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'mock-start-key-005' },
       body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
     });
     expect(response.status).toBe(200);
+    expect((await response.json()).questions).toHaveLength(8);
     expect(mocks.generateQuestions).not.toHaveBeenCalled();
     expect(mocks.attemptCreate).not.toHaveBeenCalled();
+  });
+
+  it('prevents concurrent duplicate submissions from reaching Gemini twice', async () => {
+    mocks.attemptFindFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: 'attempt-racing', status: 'GENERATING', questions: [] });
+    mocks.attemptCreate.mockRejectedValueOnce(Object.assign(new Error('unique constraint'), { code: 'P2002' }));
+    const response = await fetch(`${baseUrl}/api/assessments/generate`, {
+      method: 'POST',
+      headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json', 'Idempotency-Key': 'racing-idempotency-key' },
+      body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: 'This mock interview is already being generated. Please retry shortly.' });
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
   });
 
   it('keeps duplicate protection for an idempotency key whose generation already failed', async () => {
@@ -454,16 +490,12 @@ describe('authentication and candidate API routes', () => {
     expect(mocks.attemptCreate).not.toHaveBeenCalled();
   });
 
-  it('submits all 8 answers and evaluates them together once', async () => {
+  it('submits all 8 answers and grades them without another Gemini request', async () => {
     const questions = mockQuestions.map((question, index) => ({ ...question, id: `question-${index + 1}`, position: index }));
     const inProgress = { id: 'attempt-8', status: 'IN_PROGRESS', deadline: new Date(Date.now() + 60_000), dailyUsageId: 'daily-usage-1', questions, responses: [] };
     const responses = questions.map((question, index) => ({ questionId: question.id, correct: index < 6 }));
-    const completed = { ...inProgress, status: 'SUBMITTED', score: 82, evaluation: mockEvaluation, responses };
+    const completed = { ...inProgress, status: 'SUBMITTED', score: 88, evaluation: { ...mockEvaluation, overallScore: 88 }, responses };
     mocks.attemptFindFirst.mockResolvedValueOnce(inProgress).mockResolvedValueOnce(completed);
-    mocks.evaluateInterviewAnswers.mockImplementation(async (_answers, options) => {
-      await options.onUsage({ operation: 'EVALUATION', model: 'gemini-3.8-flash', statusCode: 200, succeeded: true, inputTokens: 500, outputTokens: 250, totalTokens: 750 });
-      return mockEvaluation;
-    });
     const response = await fetch(`${baseUrl}/api/assessments/attempt-8/submit`, {
       method: 'POST',
       headers: { ...bearer('candidate-7'), 'Content-Type': 'application/json' },
@@ -471,12 +503,10 @@ describe('authentication and candidate API routes', () => {
     });
     const body = await response.json();
     expect(response.status).toBe(200);
-    expect(body).toMatchObject({ overallScore: 82, score: 82, total: 8, strengths: ['Clear reasoning'], weaknesses: ['Add more tradeoff detail'] });
+    expect(body).toMatchObject({ overallScore: 88, score: 88, total: 8 });
     expect(body.questionScores).toHaveLength(8);
-    expect(mocks.evaluateInterviewAnswers).toHaveBeenCalledTimes(1);
-    expect(mocks.evaluateInterviewAnswers.mock.calls[0][0]).toHaveLength(8);
+    expect(mocks.evaluateInterviewAnswers).not.toHaveBeenCalled();
     expect(mocks.responseUpsert).toHaveBeenCalledTimes(8);
-    expect(mocks.geminiApiUsageCreate).toHaveBeenCalledWith({ data: expect.objectContaining({ operation: 'EVALUATION', attemptId: 'attempt-8', totalTokens: 750 }) });
   });
 
   it('returns saved evaluation on duplicate submission without a second Gemini call', async () => {

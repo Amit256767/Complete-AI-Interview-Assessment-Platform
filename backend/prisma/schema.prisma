@@ -135,3 +135,11 @@ model GeminiApiUsage {
   @@index([attemptId, operation])
   @@index([dailyUsageId, createdAt])
 }
+
+model GeminiDailyQuota {
+  id          String   @id @default(cuid())
+  dayStart    DateTime @db.Date @unique
+  requestCount Int     @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

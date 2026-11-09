@@ -1,12 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ generateContent: vi.fn(), getGenerativeModel: vi.fn() }));
+const mocks = vi.hoisted(() => ({ generateContent: vi.fn() }));
 
-vi.mock('@google/generative-ai', () => ({
-  GoogleGenerativeAI: class {
-    getGenerativeModel(config: { model: string }) {
-      mocks.getGenerativeModel(config);
-      return { generateContent: (prompt: string) => mocks.generateContent(config.model, prompt) };
+vi.mock('@google/genai', () => ({
+  GoogleGenAI: class {
+    models = {
+      generateContent: (params: { model: string; contents: string; config?: { responseMimeType?: string } }) =>
+        mocks.generateContent(params.model, params.contents, params.config),
+    };
+    constructor(_options: { apiKey: string }) {
+      // The key is passed to the SDK but is never captured in test output.
     }
   },
 }));
@@ -33,7 +36,7 @@ const evaluation = {
     weaknesses: ['Add detail'],
   })),
 };
-const success = (value: unknown) => ({ response: { text: () => JSON.stringify(value), usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 } } });
+const success = (value: unknown) => ({ text: JSON.stringify(value), usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 50, totalTokenCount: 150 } });
 const generationInput = { role: 'Backend Engineer', category: 'Systems', difficulty: 'INTERMEDIATE' };
 const answers = questions.map((question, index) => ({
   position: index + 1,
@@ -73,6 +76,7 @@ describe('combined mock interview Gemini calls', () => {
     expect(result.questionScores).toHaveLength(8);
     expect(mocks.generateContent).toHaveBeenCalledTimes(2);
     expect(mocks.generateContent.mock.calls.map(([model]) => model)).toEqual(['gemini-3.8-flash', 'gemini-3.8-flash']);
+    expect(mocks.generateContent.mock.calls[0][2]).toEqual({ responseMimeType: 'application/json' });
     expect(mocks.generateContent.mock.calls[1][1]).toContain('"position":8');
     expect(usageEvents).toHaveLength(2);
     expect(usageEvents).toEqual(expect.arrayContaining([
@@ -84,6 +88,20 @@ describe('combined mock interview Gemini calls', () => {
   it('treats a whitespace-only API key as missing configuration', async () => {
     vi.stubEnv('GEMINI_API_KEY', '   ');
     await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ message: 'AI_NOT_CONFIGURED' });
+    expect(mocks.generateContent).not.toHaveBeenCalled();
+  });
+
+  it('uses one Gemini request for a valid assessment generation', async () => {
+    mocks.generateContent.mockResolvedValueOnce(success(questions));
+    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).resolves.toHaveLength(8);
+    expect(mocks.generateContent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not call Gemini when a daily budget reservation is rejected', async () => {
+    await expect(generateQuestions(generationInput, {
+      operation: 'GENERATION',
+      beforeRequest: async () => { throw new Error('DAILY_GEMINI_BUDGET_REACHED'); },
+    })).rejects.toMatchObject({ message: 'DAILY_GEMINI_BUDGET_REACHED' });
     expect(mocks.generateContent).not.toHaveBeenCalled();
   });
 
@@ -105,8 +123,16 @@ describe('combined mock interview Gemini calls', () => {
   });
 
   it('returns an unavailable response when retries and fallback are exhausted', async () => {
-    mocks.generateContent.mockRejectedValue(Object.assign(new Error('temporary outage'), { status: 503 }));
-    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ status: 503 });
+    mocks.generateContent.mockRejectedValue(Object.assign(new Error('temporary outage'), {
+      status: 503, errorDetails: [{ reason: 'SERVICE_UNAVAILABLE', requestId: 'gemini-req-123' }],
+    }));
+    await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({
+      status: 503,
+      providerStatus: 503,
+      diagnosis: 'provider_unavailable',
+      providerReason: 'SERVICE_UNAVAILABLE',
+      providerRequestId: 'gemini-req-123',
+    });
     expect(mocks.generateContent).toHaveBeenCalledTimes(4);
   });
 
@@ -126,16 +152,17 @@ describe('combined mock interview Gemini calls', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const apiKey = 'super-secret-gemini-key';
     mocks.generateContent.mockRejectedValue(Object.assign(
-      new Error(`API key ${apiKey} rejected: private provider response`),
-      { status: 403, errorDetails: [{ reason: 'PERMISSION_DENIED', message: `key=${apiKey}` }] },
+      new Error(JSON.stringify({ error: { status: 'UNAVAILABLE', details: [{ reason: 'SERVICE_UNAVAILABLE', metadata: { requestId: 'safe-request-123' } }] } })),
+      { status: 503, errorDetails: [{ reason: 'SERVICE_UNAVAILABLE', message: `key=${apiKey}` }] },
     ));
 
     await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ status: 503 });
 
     const log = warn.mock.calls.map(([message]) => String(message)).join('\n');
-    expect(log).toContain('status=403');
-    expect(log).toContain('diagnosis=check_api_key_or_permissions');
-    expect(log).toContain('provider_reason=PERMISSION_DENIED');
+    expect(log).toContain('status=503');
+    expect(log).toContain('diagnosis=provider_unavailable');
+    expect(log).toContain('provider_reason=SERVICE_UNAVAILABLE');
+    expect(log).toContain('request_id=safe-request-123');
     expect(log).not.toContain(apiKey);
     expect(log).not.toContain('private provider response');
   });
@@ -166,6 +193,20 @@ describe('combined mock interview Gemini calls', () => {
     mocks.generateContent.mockRejectedValue(Object.assign(new Error('quota_exceeded: daily quota'), { status: 429, errorDetails: { reason: 'quota_exceeded' } }));
     await expect(generateQuestions(generationInput, { operation: 'GENERATION' })).rejects.toMatchObject({ message: 'AI_QUOTA_EXCEEDED', status: 429 });
     expect(mocks.generateContent).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for Retry-After before retrying a rate-limited request', async () => {
+    vi.useFakeTimers();
+    mocks.generateContent
+      .mockRejectedValueOnce(Object.assign(new Error('rate_limit_exceeded'), { status: 429, headers: { 'retry-after': '3' } }))
+      .mockResolvedValueOnce(success(questions));
+    const pending = generateQuestions(generationInput, { operation: 'GENERATION' });
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(mocks.generateContent).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(pending).resolves.toHaveLength(8);
+    expect(mocks.generateContent).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
   });
 
   it('retries a timed out generation and then uses the configured fallback model', async () => {
