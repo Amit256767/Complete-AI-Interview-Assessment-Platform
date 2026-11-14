@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   dailyUsageUpdateMany: vi.fn(),
   geminiDailyQuotaUpsert: vi.fn(),
   geminiDailyQuotaUpdateMany: vi.fn(),
+  geminiDailyQuotaFindUnique: vi.fn(),
+  dailyUsageFindUnique: vi.fn(),
   geminiApiUsageCreate: vi.fn(),
   queryRaw: vi.fn(),
   generateQuestions: vi.fn(),
@@ -44,15 +46,17 @@ vi.mock('@prisma/client', () => ({
       findFirst: mocks.resumeFindFirst,
       create: mocks.resumeCreate,
     };
+    dailyUsage = { findUnique: mocks.dailyUsageFindUnique };
+    geminiDailyQuota = { findUnique: mocks.geminiDailyQuotaFindUnique };
     question = { findMany: vi.fn() };
     $queryRaw = mocks.queryRaw;
     $transaction = (callback: (tx: unknown) => unknown) =>
       callback({
         response: { upsert: mocks.responseUpsert },
         attempt: { update: mocks.attemptUpdate, updateMany: mocks.attemptUpdateMany, create: mocks.attemptCreate, findFirst: mocks.attemptFindFirst },
-        dailyUsage: { upsert: mocks.dailyUsageUpsert, update: mocks.dailyUsageUpdate, updateMany: mocks.dailyUsageUpdateMany },
+        dailyUsage: { upsert: mocks.dailyUsageUpsert, update: mocks.dailyUsageUpdate, updateMany: mocks.dailyUsageUpdateMany, findUnique: mocks.dailyUsageFindUnique },
         geminiApiUsage: { create: mocks.geminiApiUsageCreate },
-        geminiDailyQuota: { upsert: mocks.geminiDailyQuotaUpsert, updateMany: mocks.geminiDailyQuotaUpdateMany },
+        geminiDailyQuota: { upsert: mocks.geminiDailyQuotaUpsert, updateMany: mocks.geminiDailyQuotaUpdateMany, findUnique: mocks.geminiDailyQuotaFindUnique },
       });
   },
 }));
@@ -66,13 +70,15 @@ const secret = 'test-only-secret-that-is-long-enough-32';
 let server: Server;
 let baseUrl: string;
 let app: any;
+let utcDayStart: (date?: Date) => Date;
 
 beforeAll(async () => {
   process.env.NODE_ENV = 'test';
   process.env.JWT_SECRET = secret;
+  process.env.GEMINI_DAILY_REQUEST_BUDGET = '15';
   process.env.FRONTEND_URL = 'https://hireprep-example.vercel.app, https://complete-ai-interview-assessment-pl.vercel.app/';
   process.env.CLIENT_URL = 'https://hireprep-example.netlify.app, https://secondary-client.example';
-  ({ app } = await import('../src/index.js'));
+  ({ app, utcDayStart } = await import('../src/index.js'));
   server = app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => {
     server.once('listening', resolve);
@@ -87,6 +93,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  process.env.GEMINI_DAILY_REQUEST_BUDGET = '15';
   mocks.userFindUnique.mockResolvedValue(null);
   mocks.attemptFindMany.mockResolvedValue([]);
   mocks.attemptCount.mockResolvedValue(0);
@@ -99,10 +106,12 @@ beforeEach(() => {
   mocks.dailyUsageUpdateMany.mockResolvedValue({ count: 1 });
   mocks.geminiDailyQuotaUpsert.mockResolvedValue({ id: 'gemini-daily-quota-1' });
   mocks.geminiDailyQuotaUpdateMany.mockResolvedValue({ count: 1 });
+  mocks.geminiDailyQuotaFindUnique.mockResolvedValue({ requestCount: 4 });
+  mocks.dailyUsageFindUnique.mockResolvedValue({ geminiRequestCount: 2, geminiInputTokens: 120, geminiOutputTokens: 80, geminiTotalTokens: 200 });
   mocks.geminiApiUsageCreate.mockResolvedValue({ id: 'gemini-usage-1' });
   mocks.resumeFindMany.mockResolvedValue([]);
   mocks.generateQuestions.mockResolvedValue([]);
-  mocks.queryRaw.mockResolvedValue([{ '?column?': 1 }]);
+  mocks.queryRaw.mockResolvedValue([{ attemptTable: 'Attempt', dailyUsageTable: 'DailyUsage', geminiUsageTable: 'GeminiApiUsage', quotaTable: 'GeminiDailyQuota' }]);
 });
 
 const bearer = (userId: string) => ({ Authorization: `Bearer ${jwt.sign({ sub: userId }, secret)}` });
@@ -133,10 +142,30 @@ describe('authentication and candidate API routes', () => {
     const health = await fetch(`${baseUrl}/api/health`);
     expect(health.status).toBe(200);
     expect(await health.json()).toEqual({ status: 'ok', database: 'connected', ai: false });
-    expect(mocks.queryRaw).toHaveBeenCalledOnce();
+    expect(mocks.queryRaw).toHaveBeenCalledTimes(2);
 
     const apiRoot = await fetch(`${baseUrl}/api`);
     expect(apiRoot.status).toBe(404);
+  });
+
+  it('reports the database as not ready when the quota migration has not been applied', async () => {
+    process.env.DATABASE_URL = 'postgresql://test';
+    mocks.queryRaw.mockResolvedValueOnce([{ '?column?': 1 }]).mockResolvedValueOnce([{ attemptTable: 'Attempt', dailyUsageTable: 'DailyUsage', geminiUsageTable: 'GeminiApiUsage', quotaTable: null }]);
+    const response = await fetch(`${baseUrl}/api/health`);
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ status: 'unavailable', database: 'schema_not_ready' });
+  });
+
+  it('exposes authenticated global and per-user Gemini request usage', async () => {
+    process.env.GEMINI_DAILY_REQUEST_BUDGET = '12';
+    const response = await fetch(`${baseUrl}/api/usage`, { headers: bearer('candidate-7') });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      global: { requests: 4, budget: 12, scope: 'all_users' },
+      user: { requests: 2, inputTokens: 120, outputTokens: 80, totalTokens: 200 },
+    });
+    expect(mocks.geminiDailyQuotaFindUnique).toHaveBeenCalledOnce();
+    expect(mocks.dailyUsageFindUnique).toHaveBeenCalledOnce();
   });
 
   it('trusts exactly one Render proxy hop before rate limiting', async () => {
@@ -406,7 +435,7 @@ describe('authentication and candidate API routes', () => {
       body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
     });
     expect(response.status).toBe(429);
-    expect(await response.json()).toEqual({ error: 'Today’s AI request limit has been reached. Please try again after the quota resets.' });
+    expect(await response.json()).toEqual({ error: 'This app’s shared Gemini request budget for today has been reached. It resets at midnight UTC; please try again tomorrow.' });
     expect(mocks.geminiDailyQuotaUpsert).toHaveBeenCalledOnce();
     expect(mocks.generateQuestions).toHaveBeenCalledOnce();
   });
@@ -445,7 +474,7 @@ describe('authentication and candidate API routes', () => {
         body: JSON.stringify({ role: 'Backend engineer', category: 'Systems', difficulty: 'INTERMEDIATE', count: 8, durationMinutes: 15 }),
       });
       expect(response.status).toBe(429);
-      expect(await response.json()).toEqual({ error: 'The Gemini API project has reached its current quota. Please try again after the quota resets.' });
+      expect(await response.json()).toEqual({ error: 'The Gemini API project has reached its current quota. Check the project’s active quota and retry after Google’s reset window.' });
     } finally {
       log.mockRestore();
     }
@@ -461,6 +490,7 @@ describe('authentication and candidate API routes', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).questions).toHaveLength(8);
     expect(mocks.generateQuestions).not.toHaveBeenCalled();
+    expect(mocks.geminiDailyQuotaUpsert).not.toHaveBeenCalled();
     expect(mocks.attemptCreate).not.toHaveBeenCalled();
   });
 
@@ -558,8 +588,25 @@ describe('authentication and candidate API routes', () => {
     expect(body.completed).toBe(17);
     expect(mocks.attemptFindMany.mock.calls[0][0].where.userId).toBe('candidate-7');
     expect(mocks.resumeFindMany.mock.calls[0][0].where.userId).toBe('candidate-7');
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
   });
 
+  it('inspects global and user Gemini usage without invoking an AI provider', async () => {
+    const response = await fetch(`${baseUrl}/api/usage`, { headers: bearer('candidate-7') });
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.global).toEqual({ requests: 4, budget: 15, scope: 'all_users' });
+    expect(body.user).toEqual({ requests: 2, inputTokens: 120, outputTokens: 80, totalTokens: 200 });
+    expect(body.dayStart).toMatch(/^\d{4}-\d{2}-\d{2}T00:00:00\.000Z$/);
+    expect(mocks.geminiDailyQuotaFindUnique).toHaveBeenCalledOnce();
+    expect(mocks.dailyUsageFindUnique).toHaveBeenCalledOnce();
+    expect(mocks.generateQuestions).not.toHaveBeenCalled();
+  });
+
+  it('uses a new UTC quota bucket immediately after midnight UTC', async () => {
+    expect(utcDayStart(new Date('2026-11-13T23:59:59.000Z')).toISOString()).toBe('2026-11-13T00:00:00.000Z');
+    expect(utcDayStart(new Date('2026-11-14T00:00:00.000Z')).toISOString()).toBe('2026-11-14T00:00:00.000Z');
+  });
   it('rejects a PDF upload whose content does not have a PDF signature', async () => {
     const form = new FormData();
     form.append('resume', new Blob(['not a PDF'], { type: 'application/pdf' }), 'resume.pdf');

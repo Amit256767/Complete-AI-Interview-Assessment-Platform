@@ -46,7 +46,15 @@ export type GeminiUsageEvent = {
   totalTokens: number;
 };
 export type GeminiUsageReporter = (event: GeminiUsageEvent) => Promise<void>;
-type GeminiCallOptions = { operation: GeminiOperation; onUsage?: GeminiUsageReporter; beforeRequest?: () => Promise<void> };
+type GeminiReservation = { quotaBefore: number; quotaAfter: number; budget: number };
+type GeminiCallOptions = {
+  operation: GeminiOperation;
+  onUsage?: GeminiUsageReporter;
+  beforeRequest?: () => Promise<GeminiReservation | void>;
+  userId?: string;
+  sessionId?: string;
+  endpoint?: string;
+};
 
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 const DEFAULT_FALLBACK_MODEL = 'gemini-3.7-flash';
@@ -278,10 +286,22 @@ async function requestWithRetries<T>(
   options?: GeminiCallOptions,
 ): Promise<T> {
   for (let attempt = 1; attempt <= settings.retryAttempts; attempt += 1) {
-    await options?.beforeRequest?.();
+    let reservation: GeminiReservation | void;
+    try {
+      reservation = await options?.beforeRequest?.();
+    } catch (error) {
+      const name = error instanceof Error ? error.name : 'NonError';
+      console.warn(`[gemini] request blocked purpose=${options?.operation ?? 'GENERATION'} endpoint=${options?.endpoint ?? 'unknown'} user_id=${options?.userId ?? 'unknown'} session_id=${options?.sessionId ?? 'unknown'} result=quota_rejected error=${name}`);
+      throw error;
+    }
+    const quotaLog = reservation
+      ? ` quota_before=${reservation.quotaBefore} quota_after=${reservation.quotaAfter} quota_budget=${reservation.budget}`
+      : '';
+    console.info(`[gemini] request initiated purpose=${options?.operation ?? 'GENERATION'} endpoint=${options?.endpoint ?? 'unknown'} user_id=${options?.userId ?? 'unknown'} session_id=${options?.sessionId ?? 'unknown'} model=${modelName} attempt=${attempt}/${settings.retryAttempts}${quotaLog}`);
     try {
       const result = await operation();
       await reportUsage(options, { operation: options?.operation ?? 'GENERATION', model: modelName, statusCode: 200, succeeded: true, ...tokenUsage(result) });
+      console.info(`[gemini] request completed purpose=${options?.operation ?? 'GENERATION'} endpoint=${options?.endpoint ?? 'unknown'} user_id=${options?.userId ?? 'unknown'} session_id=${options?.sessionId ?? 'unknown'} model=${modelName} result=succeeded status=200${quotaLog}`);
       return result;
     } catch (error) {
       const status = getStatus(error);
@@ -295,6 +315,7 @@ async function requestWithRetries<T>(
       const safeReason = getSafeProviderReason(error);
       const requestId = getSafeProviderRequestId(error);
       console.warn(`[gemini] request failed model=${modelName} status=${status ?? 'network'} diagnosis=${diagnoseProviderError(error, status)}${safeReason ? ` provider_reason=${safeReason}` : ''}${requestId ? ` request_id=${requestId}` : ''} attempt=${attempt}/${settings.retryAttempts} retryable=${retryable}${quota ? ' quota=exhausted' : ''}`);
+      console.warn(`[gemini] request completed purpose=${options?.operation ?? 'GENERATION'} endpoint=${options?.endpoint ?? 'unknown'} user_id=${options?.userId ?? 'unknown'} session_id=${options?.sessionId ?? 'unknown'} model=${modelName} result=failed status=${status ?? 'network'}${quotaLog}`);
 
       if (quota) throw new GeminiQuotaError(false);
       if (!retryable) throw new GeminiServiceUnavailableError(false, status, diagnoseProviderError(error, status), safeReason, requestId);

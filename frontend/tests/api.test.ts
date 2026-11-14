@@ -28,7 +28,7 @@ describe('frontend API request headers', () => {
       headers: { 'Content-Type': 'application/json' },
     })));
 
-    await expect(checkApiHealth()).rejects.toMatchObject({ status: 503, message: 'API request failed (503).' });
+    await expect(checkApiHealth()).rejects.toMatchObject({ status: 503, message: 'The interview service is temporarily unavailable. Please try again shortly.' });
   });
 
   it('describes browser access failures as possible CORS failures', async () => {
@@ -67,7 +67,16 @@ describe('frontend API request headers', () => {
       headers: { 'Content-Type': 'application/json' },
     })));
     await expect(requestApi('/assessments/generate', { method: 'POST' }))
-      .rejects.toMatchObject({ status: 503, message: 'AI service is temporarily unavailable. Please try again shortly.' });
+      .rejects.toMatchObject({ status: 503, message: 'The interview service is temporarily unavailable. Please try again shortly.' });
+  });
+
+  it('gives actionable guidance for auth failures while preserving provider quota messages', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401, headers: { 'Content-Type': 'application/json' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: 'Today’s AI request limit has been reached. Please try again after the quota resets.' }), { status: 429, headers: { 'Content-Type': 'application/json' } })));
+
+    await expect(requestApi('/assessments/generate')).rejects.toMatchObject({ status: 401, message: 'Please sign in again to start this interview.' });
+    await expect(requestApi('/assessments/generate')).rejects.toMatchObject({ status: 429, message: 'Today’s AI request limit has been reached. Please try again after the quota resets.' });
   });
 
   it.each([undefined, 'short', 'x'.repeat(129)])('replaces a missing or invalid start key (%s) before fetch', async (key) => {

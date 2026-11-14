@@ -39,9 +39,9 @@ Set `GEMINI_API_KEY` in `backend/.env`; the code reads this exact server-side va
 
 ## Mock interview usage
 
-Each mock interview generates exactly 8 questions in one Gemini request and evaluates all 8 submitted answers in one combined request. A successful interview therefore uses 2 primary-model requests; transient retries or fallback requests can add calls. The backend limits each authenticated user to 10 successfully generated interviews per UTC day and records daily interview totals, Gemini request counts, model names, statuses, and token usage. Idempotency keys prevent repeated starts and completed evaluations are returned from storage.
+Each mock interview generates exactly 8 questions in one Gemini request. Answer evaluation currently uses local deterministic scoring and does not call Gemini. Retries and fallback model requests can add provider requests. Each authenticated user is limited to 10 successfully generated interviews per UTC day. A separate shared application guard defaults to 15 Gemini request attempts per UTC day (`GEMINI_DAILY_REQUEST_BUDGET`); set that environment variable in Render to a positive integer to configure it. This 15-request default is a conservative app-level circuit breaker, not a claim about Google's quota. It is shared across all users and counts outbound attempts, including provider failures and retries, because those calls may have reached Google. Duplicate idempotent starts are resolved before reserving a Gemini request. See authenticated `GET /api/usage` for today's global request count/budget and your own request/token totals.
 
-Configure `GEMINI_RETRY_ATTEMPTS` (default 3) and `GEMINI_RETRY_BASE_DELAY_MS` (default 500) in the backend environment. `GEMINI_FALLBACK_MODEL` defaults to `gemini-3.7-flash`; set it blank to disable fallback. The Gemini free-tier quota is shared by the Google API project, so per-user limits do not guarantee the project will stay within its free quota. Check the active project limits in Google AI Studio. Transient 429 rate limits are retried; project quota exhaustion returns a friendly 429 without repeated calls.
+Configure `GEMINI_RETRY_ATTEMPTS` (default 3), `GEMINI_RETRY_BASE_DELAY_MS` (default 500), and `GEMINI_DAILY_REQUEST_BUDGET` in the backend environment. `GEMINI_FALLBACK_MODEL` defaults to `gemini-3.7-flash`; set it blank to disable fallback. Gemini limits vary by model, tier, and project and are shared per Google Cloud project, not per API key. Inspect the active model's RPD/RPM/TPM limits and other callers in AI Studio before setting a production budget. Keep the app budget below the remaining project request allowance after reserving capacity for other workloads; do not infer provider quota from the app's default of 15. Transient rate limits honor `Retry-After` where supplied and are retried within the configured attempt limit; daily project quota exhaustion is not retried.
 
 Apply the checked-in interview usage migration to the target PostgreSQL database before deploying this backend version. App startup does not run migrations automatically.
 
@@ -72,6 +72,7 @@ Endpoints:
 - `POST /api/auth/signup` — `{name,email,password}`
 - `POST /api/auth/login` — `{email,password}`
 - `GET /api/dashboard`
+- `GET /api/usage` (authenticated global daily request count/budget and signed-in user's request/token totals)
 - `GET /api/questions`
 - `POST /api/resumes` — multipart PDF field `resume`
 - `POST /api/assessments/generate` - `{role,category,difficulty,count:8,durationMinutes,resumeId?,jobDescription?}`; requires an `Idempotency-Key` header.

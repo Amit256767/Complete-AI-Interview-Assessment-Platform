@@ -41,7 +41,16 @@ export async function requestApi<T>(path: string, options: RequestInit = {}, tok
     ? await response.json().catch(() => null)
     : null;
   if (!response.ok) {
-    const error = new Error(data?.error || `API request failed (${response.status}).`) as Error & { status: number };
+    const statusMessage = response.status === 401 || response.status === 403
+      ? 'Please sign in again to start this interview.'
+      : response.status === 429
+        ? (data?.error || 'The AI service is at its request limit. Please wait before trying again.')
+        : response.status === 500
+          ? 'The server hit an error while starting your interview. Please try again shortly.'
+          : response.status === 502 || response.status === 503 || response.status === 504
+            ? 'The interview service is temporarily unavailable. Please try again shortly.'
+            : data?.error || `API request failed (${response.status}).`;
+    const error = new Error(statusMessage) as Error & { status: number };
     error.status = response.status;
     throw error;
   }
